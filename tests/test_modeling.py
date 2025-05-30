@@ -22,8 +22,8 @@ T_TISSUE_LONG = np.linspace(0, 5, 50) # 50 points, up to 5 time units (e.g. min)
 
 # Simple AIF for testing: instant rise, exponential decay
 T_AIF = np.linspace(0, 5, 100)
-AIF_CONC = 10 * np.exp(-T_AIF / 0.5)
-AIF_CONC[0] = 0
+AIF_CONC = 10 * np.exp(-T_AIF / 0.5) 
+AIF_CONC[0] = 0 
 
 CP_INTERP_FUNC = interp1d(T_AIF, AIF_CONC, kind='linear', bounds_error=False, fill_value=0.0)
 INTEGRAL_CP_DT_AIF = cumtrapz(AIF_CONC, T_AIF, initial=0)
@@ -58,7 +58,7 @@ class TestPharmacokineticModels(unittest.TestCase):
         Fp, PS, vp, ve = 0.5, 0.1, 0.05, 0.25
         Ct_model = modeling.solve_2cxm_ode_model(T_TISSUE_LONG, Fp, PS, vp, ve, CP_INTERP_FUNC, t_span_max=T_AIF_MAX)
         self.assertEqual(Ct_model.shape, T_TISSUE_LONG.shape)
-        self.assertTrue(np.all(np.isfinite(Ct_model)))
+        self.assertTrue(np.all(np.isfinite(Ct_model))) 
 
     def test_model_parameter_validation(self):
         models_to_test = {
@@ -75,24 +75,24 @@ class TestPharmacokineticModels(unittest.TestCase):
         for name, model_func in models_to_test.items():
             for param_name in params_per_model[name]:
                 invalid_params_dict = {pn: 0.1 for pn in params_per_model[name]} # Base valid params
-
+                
                 current_test_val = -0.1
                 if name == "2cxm" and (param_name == "vp" or param_name == "ve"):
-                    current_test_val = 1e-8
-
+                    current_test_val = 1e-8 
+                
                 invalid_params_dict[param_name] = current_test_val
-
+                
                 with self.subTest(model=name, param=param_name, value=current_test_val):
                     res = model_func(T_TISSUE_SHORT, invalid_params_dict)
                     self.assertTrue(np.all(np.isinf(res)), f"{name} with {param_name}={current_test_val} did not return all inf.")
-
+    
     def test_model_edge_case_time_points(self):
         t_empty = np.array([])
         t_single = np.array([1.0])
         # Test Standard Tofts (as representative for convolution based)
         self.assertEqual(modeling.standard_tofts_model_conv(t_empty, 0.1, 0.1, CP_INTERP_FUNC).shape, t_empty.shape)
         # _convolve_Cp_with_exp returns zeros_like for len(t) < 2
-        self.assertEqual(modeling.standard_tofts_model_conv(t_single, 0.1, 0.1, CP_INTERP_FUNC).shape, t_single.shape)
+        self.assertEqual(modeling.standard_tofts_model_conv(t_single, 0.1, 0.1, CP_INTERP_FUNC).shape, t_single.shape) 
         self.assertTrue(np.all(modeling.standard_tofts_model_conv(t_single, 0.1, 0.1, CP_INTERP_FUNC)==0))
 
 
@@ -103,7 +103,7 @@ class TestPharmacokineticModels(unittest.TestCase):
     @patch('core.modeling.solve_ivp')
     def test_solve_2cxm_ode_solver_failure(self, mock_solve_ivp):
         mock_sol = MagicMock()
-        mock_sol.status = -1
+        mock_sol.status = -1 
         mock_sol.message = "Solver failed"
         mock_solve_ivp.return_value = mock_sol
         
@@ -213,7 +213,7 @@ class TestSingleVoxelFitting(unittest.TestCase):
 
 class TestFitVoxelWorker(unittest.TestCase):
     """Tests for the _fit_voxel_worker function."""
-
+    
     def setUp(self):
         self.voxel_idx = (0,0,0)
         self.t_tissue = T_TISSUE_LONG
@@ -226,7 +226,7 @@ class TestFitVoxelWorker(unittest.TestCase):
 
 
     def test_worker_successful_fit_standard_tofts(self): # Specify model
-        args = (self.voxel_idx, self.Ct_st, self.t_tissue, self.t_aif, self.Cp_aif,
+        args = (self.voxel_idx, self.Ct_st, self.t_tissue, self.t_aif, self.Cp_aif, 
                 "Standard Tofts", (0.1,0.1), ([0,0],[1,1]))
         idx, model_name, result = modeling._fit_voxel_worker(args)
         self.assertEqual(idx, self.voxel_idx)
@@ -237,7 +237,7 @@ class TestFitVoxelWorker(unittest.TestCase):
 
     def test_worker_skipped_all_nan(self):
         Ct_nan = np.full_like(self.t_tissue, np.nan)
-        args = (self.voxel_idx, Ct_nan, self.t_tissue, self.t_aif, self.Cp_aif,
+        args = (self.voxel_idx, Ct_nan, self.t_tissue, self.t_aif, self.Cp_aif, 
                 "Standard Tofts", (0.1,0.1), ([0,0],[1,1]))
         _, _, result = modeling._fit_voxel_worker(args)
         self.assertIn("error", result)
@@ -246,15 +246,15 @@ class TestFitVoxelWorker(unittest.TestCase):
     def test_worker_skipped_insufficient_data(self):
         t_short = self.t_tissue[:3] # Standard Tofts needs at least 2 params * 2 = 4 points typically
         Ct_short = self.Ct_st[:3]
-        args = (self.voxel_idx, Ct_short, t_short, self.t_aif, self.Cp_aif,
-                "Standard Tofts", (0.1,0.1), ([0,0],[1,1]))
+        args = (self.voxel_idx, Ct_short, t_short, self.t_aif, self.Cp_aif, 
+                "Standard Tofts", (0.1,0.1), ([0,0],[1,1])) 
         _, _, result = modeling._fit_voxel_worker(args)
         self.assertIn("error", result)
         self.assertTrue("Skipped (insufficient valid data" in result["error"] or "Skipped (valid data points" in result["error"])
 
 
     def test_worker_unknown_model(self):
-        args = (self.voxel_idx, self.Ct_st, self.t_tissue, self.t_aif, self.Cp_aif,
+        args = (self.voxel_idx, self.Ct_st, self.t_tissue, self.t_aif, self.Cp_aif, 
                 "Unknown Model Type", (0.1,0.1), ([0,0],[1,1]))
         _, _, result = modeling._fit_voxel_worker(args)
         self.assertIn("error", result)
@@ -263,7 +263,7 @@ class TestFitVoxelWorker(unittest.TestCase):
     @patch('core.modeling.fit_standard_tofts')
     def test_worker_fit_failure_nan_params(self, mock_fit_st):
         mock_fit_st.return_value = ((np.nan, np.nan), np.full_like(self.t_tissue, np.nan))
-        args = (self.voxel_idx, self.Ct_st, self.t_tissue, self.t_aif, self.Cp_aif,
+        args = (self.voxel_idx, self.Ct_st, self.t_tissue, self.t_aif, self.Cp_aif, 
                 "Standard Tofts", (0.1,0.1), ([0,0],[1,1]))
         _, _, result = modeling._fit_voxel_worker(args)
         self.assertIn("error", result)
@@ -276,17 +276,17 @@ class TestVoxelWiseFitting(unittest.TestCase):
     def setUp(self):
         self.Ct_data_shape = (2,2,1,20) # X, Y, Z, Time
         self.Ct_data = np.zeros(self.Ct_data_shape)
-        self.t_tissue = np.linspace(0, 2, 20)
-        self.t_aif = T_AIF[:50]
+        self.t_tissue = np.linspace(0, 2, 20) 
+        self.t_aif = T_AIF[:50] 
         self.Cp_aif = AIF_CONC[:50]
         
         self.true_st_params = (0.25, 0.3) # Ktrans, ve
-        Ct_clean_voxel0 = modeling.standard_tofts_model_conv(self.t_tissue, *self.true_st_params,
+        Ct_clean_voxel0 = modeling.standard_tofts_model_conv(self.t_tissue, *self.true_st_params, 
                                                              interp1d(self.t_aif, self.Cp_aif, kind='linear', bounds_error=False, fill_value=0.0))
         self.Ct_data[0,0,0,:] = Ct_clean_voxel0 + np.random.normal(0, 0.001 * np.max(Ct_clean_voxel0), size=Ct_clean_voxel0.shape)
-        self.Ct_data[0,1,0,:] = Ct_clean_voxel0 * 0.5 + np.random.normal(0, 0.001 * np.max(Ct_clean_voxel0), size=Ct_clean_voxel0.shape)
-        self.Ct_data[1,0,0,:] = np.nan
-        self.Ct_data[1,1,0,:] = 0
+        self.Ct_data[0,1,0,:] = Ct_clean_voxel0 * 0.5 + np.random.normal(0, 0.001 * np.max(Ct_clean_voxel0), size=Ct_clean_voxel0.shape) 
+        self.Ct_data[1,0,0,:] = np.nan 
+        self.Ct_data[1,1,0,:] = 0 
 
         self.mask = np.ones(self.Ct_data_shape[:3], dtype=bool)
         self.mask[1,0,0] = False # Mask out the NaN voxel for some tests
@@ -300,19 +300,19 @@ class TestVoxelWiseFitting(unittest.TestCase):
         # Voxel (0,1,0) - good fit (different params)
         # Voxel (1,1,0) - all zero Ct, worker should return error or specific values indicating failure
         worker_results = [
-            ((0,0,0), "Standard Tofts", {"Ktrans": 0.24, "ve": 0.29}),
-            ((0,1,0), "Standard Tofts", {"Ktrans": 0.12, "ve": 0.14}),
+            ((0,0,0), "Standard Tofts", {"Ktrans": 0.24, "ve": 0.29}), 
+            ((0,1,0), "Standard Tofts", {"Ktrans": 0.12, "ve": 0.14}), 
             ((1,1,0), "Standard Tofts", {"error": "Skipped (all NaN or all zero data)"}) # Worker handles zero data
         ]
         # Note: Voxel (1,0,0) is masked out by self.mask, so it won't be in tasks_args_list
         # and thus not in worker_results if the mask is applied correctly before forming tasks.
-
+        
         mock_pool_instance.map.return_value = worker_results
         mock_pool_constructor.return_value.__enter__.return_value = mock_pool_instance
 
         param_maps = modeling.fit_standard_tofts_voxelwise(
-            self.Ct_data, self.t_tissue, self.t_aif, self.Cp_aif,
-            mask=self.mask, num_processes=2
+            self.Ct_data, self.t_tissue, self.t_aif, self.Cp_aif, 
+            mask=self.mask, num_processes=2 
         )
         
         self.assertIn("Ktrans", param_maps)
@@ -333,8 +333,8 @@ class TestVoxelWiseFitting(unittest.TestCase):
         mask = self.mask.copy() # Use the mask that excludes the all-NaN voxel
 
         param_maps = modeling.fit_standard_tofts_voxelwise(
-            self.Ct_data, self.t_tissue, self.t_aif, self.Cp_aif,
-            mask=mask, num_processes=1
+            self.Ct_data, self.t_tissue, self.t_aif, self.Cp_aif, 
+            mask=mask, num_processes=1 
         )
         self.assertIn("Ktrans", param_maps); self.assertIn("ve", param_maps)
         # Voxel (0,0,0) - should fit

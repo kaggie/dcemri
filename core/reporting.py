@@ -172,7 +172,7 @@ def save_multiple_roi_statistics_csv(
                     # fill stat columns with NaN or a placeholder.
                     for skey in stat_keys:
                         row_data[skey] = np.nan # Or "Error" / "N/A"
-
+                
                 writer.writerow(row_data)
         print(f"Multiple ROI statistics saved to: {filepath}")
     except IOError as e:
@@ -202,7 +202,7 @@ def save_roi_statistics_csv(stats_dict: dict, filepath: str, map_name: str, roi_
     """
     if not stats_dict: # Check if the dictionary is empty or None
         raise ValueError("No statistics data provided to save.")
-
+        
     fieldnames = ['MapName', 'ROIName', 'Statistic', 'Value']
     try:
         with open(filepath, 'w', newline='') as csvfile:
