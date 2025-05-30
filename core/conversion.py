@@ -99,7 +99,7 @@ def signal_to_concentration(
     log_arg = 1.0 - signal_ratio_term * E1_0_term # Shape (x,y,z,time)
     # Clip log_arg to a small positive number to prevent log(0) or log(negative values)
     # This can happen due to noise or if S(t) is much higher than S_pre
-    log_arg = np.maximum(log_arg, 1e-9) 
+    log_arg = np.maximum(log_arg, 1e-9)
     
     # Calculate R1(t) = (-1/TR) * ln(log_arg)
     R1_t = (-1.0 / TR) * np.log(log_arg) # Shape (x,y,z,time)
@@ -174,7 +174,7 @@ def signal_tc_to_concentration_tc(
         S_t_current = signal_tc[i]
         # Calculate S(t)/S_pre for the current time point
         signal_ratio_term = S_t_current / S_pre_tc
-        
+
         # Argument for the logarithm: 1 - (S(t)/S_pre) * (1 - exp(-TR * R1_0))
         log_arg = 1.0 - signal_ratio_term * E1_0_term
         # Clip log_arg to prevent log(0) or log(negative values)

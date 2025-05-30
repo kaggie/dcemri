@@ -252,7 +252,7 @@ def main():
         # This should be in the same units as aif_time_arr for consistency in modeling functions.
         # Since aif_time_arr (if generated from pop model) used args.tr (seconds), t_tissue should also be in seconds.
         t_tissue = np.arange(Ct_data.shape[3]) * args.tr # Time in seconds
-        
+
         parameter_maps = {} # Dictionary to store output parameter maps
         
         print(f"  Starting fitting with {args.num_processes} processes...")

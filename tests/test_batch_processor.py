@@ -21,7 +21,7 @@ class TestBatchProcessorArgs(unittest.TestCase):
     def setUp(self):
         self.script_path = BATCH_PROCESSOR_SCRIPT_PATH
         self.test_dir = tempfile.mkdtemp()
-        
+
         # Create minimal dummy files needed for argparse to pass file existence checks if any are implicitly done by type=
         # For most argparse checks, files don't strictly need to exist unless type=argparse.FileType
         self.dce_dummy = os.path.join(self.test_dir, "dce.nii")
@@ -106,7 +106,7 @@ class TestBatchProcessorArgs(unittest.TestCase):
             (["--baseline_points", "xyz"], "argument --baseline_points: invalid int value: 'xyz'"),
             (["--num_processes", "def"], "argument --num_processes: invalid int value: 'def'"),
         ]
-        base_args = ["--dce", self.dce_dummy, "--t1map", self.t1_dummy, "--aif_file", self.aif_dummy, 
+        base_args = ["--dce", self.dce_dummy, "--t1map", self.t1_dummy, "--aif_file", self.aif_dummy,
                        "--model", "Standard Tofts", "--out_dir", self.test_dir]
         
         for invalid_arg_pair, error_msg_fragment in args_sets:
@@ -114,17 +114,17 @@ class TestBatchProcessorArgs(unittest.TestCase):
                 result = self._run_script(base_args + invalid_arg_pair)
                 self.assertEqual(result.returncode, 2, f"Stderr: {result.stderr}")
                 self.assertIn(error_msg_fragment, result.stderr)
-    
+
     def test_aif_param_parsing(self):
         """Test parsing of --aif_param key-value pairs."""
         args = ["--dce", self.dce_dummy, "--t1map", self.t1_dummy, "--tr", "0.005", "--r1_relaxivity", "4.5",
-                "--aif_pop_model", "parker", 
-                "--aif_param", "D_scaler", "0.8", 
-                "--aif_param", "A1", "0.7", 
+                "--aif_pop_model", "parker",
+                "--aif_param", "D_scaler", "0.8",
+                "--aif_param", "A1", "0.7",
                 "--model", "Standard Tofts", "--out_dir", os.path.join(self.test_dir, "aif_param_test")]
         result = self._run_script(args)
         # Expect it to fail after argparse, during data loading or AIF generation with dummy files
-        self.assertNotEqual(result.returncode, 2, f"Argparse should pass. Stderr: {result.stderr}") 
+        self.assertNotEqual(result.returncode, 2, f"Argparse should pass. Stderr: {result.stderr}")
         # Check if the script's printout includes the parsed AIF params
         # This relies on the script printing args, which it does.
         self.assertIn("Population AIF Params: [['D_scaler', '0.8'], ['A1', '0.7']]", result.stdout.replace(" ", ""))
@@ -151,7 +151,7 @@ class TestBatchProcessorEndToEnd(unittest.TestCase):
             writer.writerow(["Time", "Concentration"]) # Header
             for i in range(10): # 10 time points for AIF
                 # Time in seconds, matching TR*num_dce_timepoints typically
-                writer.writerow([i * (2.0), 0.5 * np.exp(-i*0.1) + 0.1*i*0.1]) 
+                writer.writerow([i * (2.0), 0.5 * np.exp(-i*0.1) + 0.1*i*0.1])
 
     def tearDown(self):
         shutil.rmtree(self.base_dir)
@@ -185,12 +185,12 @@ class TestBatchProcessorEndToEnd(unittest.TestCase):
             "--aif_file", self.aif_path,
             "--model", "Standard Tofts",
             "--out_dir", self.output_dir,
-            "--num_processes", "1" 
+            "--num_processes", "1"
         ]
         # Create output dir for this test
         os.makedirs(self.output_dir, exist_ok=True)
         result = self._run_script(args)
-        
+
         print("STDOUT (test_successful_run_tofts_aif_file):", result.stdout)
         print("STDERR (test_successful_run_tofts_aif_file):", result.stderr)
         self.assertEqual(result.returncode, 0, f"Script failed. Stderr: {result.stderr}\nStdout: {result.stdout}")
@@ -204,14 +204,14 @@ class TestBatchProcessorEndToEnd(unittest.TestCase):
         self.assertEqual(ktrans_map_img.shape, (3,3,2))
         ktrans_data = ktrans_map_img.get_fdata()
         mask_data = nib.load(self.mask_path).get_fdata().astype(bool)
-        self.assertFalse(np.all(np.isnan(ktrans_data[mask_data])), 
+        self.assertFalse(np.all(np.isnan(ktrans_data[mask_data])),
                          "Ktrans map is all NaNs within the mask.")
 
     def test_output_dir_creation(self):
         """Test that the output directory is created if it doesn't exist."""
         new_output_dir = os.path.join(self.test_dir, "newly_created_output")
         # DO NOT create new_output_dir here
-            
+
         args = [
             "--dce", self.dce_path, "--t1map", self.t1_path,
             "--tr", "2.0", "--r1_relaxivity", "3.7",
@@ -229,7 +229,7 @@ class TestBatchProcessorEndToEnd(unittest.TestCase):
         output_is_file_path = os.path.join(self.test_dir, "i_am_a_file.txt")
         with open(output_is_file_path, 'w') as f:
             f.write("This is a file, not a directory.")
-            
+
         args = [
             "--dce", self.dce_path, "--t1map", self.t1_path,
             "--tr", "2.0", "--r1_relaxivity", "3.7",

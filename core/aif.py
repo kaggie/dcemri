@@ -146,7 +146,7 @@ def load_aif_from_file(filepath: str) -> tuple[np.ndarray, np.ndarray]:
                         except ValueError:
                             header_skipped = True
                             continue # Skip header row
-                    
+
                     if len(row) != 2:
                         raise ValueError(
                             f"Incorrect format in AIF file: {filepath} at line {i + 1}. "
@@ -159,7 +159,7 @@ def load_aif_from_file(filepath: str) -> tuple[np.ndarray, np.ndarray]:
                         raise ValueError(
                             f"Non-numeric data found in AIF file: {filepath} at line {i + 1} after potential header."
                         )
-            
+
             if not time_points: # Ensure some data was actually loaded
                 raise ValueError(f"No numeric data found in AIF file: {filepath}")
 

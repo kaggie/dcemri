@@ -35,13 +35,13 @@ class TestSignalToConcentration4D(unittest.TestCase): # Renamed
             baseline_time_points=self.baseline_time_points
         )
         self.assertEqual(Ct_data.shape, self.dce_series_data.shape)
-        
+
         # Manually calculate for one voxel to verify
         S_pre_expected = 100.0
         R1_0_expected = 1.0 / self.t10_map_data[0,0,0] 
         assert_array_almost_equal(Ct_data[0,0,0,:self.baseline_time_points], 0, decimal=5,
                                   err_msg="Baseline concentration should be zero.")
-        
+
         S_t_enhanced = 150.0
         signal_ratio_term_enhanced = S_t_enhanced / S_pre_expected
         E1_0_term = (1.0 - np.exp(-self.TR * R1_0_expected)) 
@@ -49,7 +49,7 @@ class TestSignalToConcentration4D(unittest.TestCase): # Renamed
         R1_t_enhanced = (-1.0 / self.TR) * np.log(log_arg_enhanced) 
         delta_R1_t_enhanced = R1_t_enhanced - R1_0_expected 
         Ct_t_enhanced_expected = delta_R1_t_enhanced / self.r1 
-        
+
         assert_array_almost_equal(Ct_data[0,0,0,self.baseline_time_points:], Ct_t_enhanced_expected, decimal=5,
                                   err_msg="Concentration in enhanced phase mismatch.")
 
@@ -80,15 +80,15 @@ class TestSignalToConcentration4D(unittest.TestCase): # Renamed
         Ct_data = conversion.signal_to_concentration(self.dce_series_data, t10_map_data_with_zero, self.r1, self.TR, baseline_time_points=self.baseline_time_points)
         self.assertEqual(Ct_data.shape, self.dce_series_data.shape)
         self.assertTrue(np.isfinite(Ct_data[0,0,0,0]), "Ct should be finite even with T10=0 due to epsilon.")
-        assert_array_almost_equal(Ct_data[0,0,0,:self.baseline_time_points], 0, decimal=3, 
+        assert_array_almost_equal(Ct_data[0,0,0,:self.baseline_time_points], 0, decimal=3,
                                   err_msg="Baseline with T10=0 not handled as expected.")
 
 
     def test_zero_S_pre_handling_4d(self): # Renamed
         """Test handling of S_pre=0 for 4D data (should use epsilon)."""
-        dce_data_zero_baseline = np.zeros_like(self.dce_series_data) 
+        dce_data_zero_baseline = np.zeros_like(self.dce_series_data)
         dce_data_zero_baseline[..., self.baseline_time_points:] = 50 
-        
+
         Ct_data = conversion.signal_to_concentration(dce_data_zero_baseline, self.t10_map_data, self.r1, self.TR, baseline_time_points=self.baseline_time_points)
         self.assertEqual(Ct_data.shape, self.dce_series_data.shape)
         self.assertTrue(np.all(np.abs(Ct_data[..., self.baseline_time_points:]) > 1e3) | np.all(np.isinf(Ct_data[..., self.baseline_time_points:])) | np.all(np.isnan(Ct_data[..., self.baseline_time_points:])))
@@ -99,12 +99,12 @@ class TestSignalToConcentration4D(unittest.TestCase): # Renamed
         dce_high_signal = self.dce_series_data.copy()
         dce_high_signal[0,0,0,:self.baseline_time_points] = 10 
         dce_high_signal[0,0,0,self.baseline_time_points] = 10 * 2100 
-        
+
         t10_for_clipping_test = self.t10_map_data.copy()
-        t10_for_clipping_test[0,0,0] = 10.0 
-        
+        t10_for_clipping_test[0,0,0] = 10.0
+
         Ct_data = conversion.signal_to_concentration(
-            dce_high_signal, t10_for_clipping_test, self.r1, self.TR, 
+            dce_high_signal, t10_for_clipping_test, self.r1, self.TR,
             baseline_time_points=self.baseline_time_points
         )
         self.assertTrue(np.isfinite(Ct_data[0,0,0,self.baseline_time_points]), "Clipped value should be finite")
@@ -113,18 +113,18 @@ class TestSignalToConcentration4D(unittest.TestCase): # Renamed
     def test_nan_inf_handling_4d(self): # New test
         """Test NaN/Inf in input DCE data for the 4D version."""
         dce_data_with_nan_baseline = self.dce_series_data.copy()
-        dce_data_with_nan_baseline[0,0,0,0] = np.nan 
+        dce_data_with_nan_baseline[0,0,0,0] = np.nan
         Ct_nan_baseline = conversion.signal_to_concentration(dce_data_with_nan_baseline, self.t10_map_data, self.r1, self.TR, self.baseline_time_points)
         self.assertTrue(np.all(np.isnan(Ct_nan_baseline[0,0,0,:])), "Voxel with NaN in baseline should be all NaN Ct")
 
         dce_data_with_nan_signal = self.dce_series_data.copy()
-        dce_data_with_nan_signal[0,0,0,self.baseline_time_points+1] = np.nan 
+        dce_data_with_nan_signal[0,0,0,self.baseline_time_points+1] = np.nan
         Ct_nan_signal = conversion.signal_to_concentration(dce_data_with_nan_signal, self.t10_map_data, self.r1, self.TR, self.baseline_time_points)
         self.assertTrue(np.isnan(Ct_nan_signal[0,0,0,self.baseline_time_points+1]), "NaN signal should propagate to NaN Ct")
         self.assertFalse(np.isnan(Ct_nan_signal[0,0,0,self.baseline_time_points-1]))
 
         dce_data_with_inf = self.dce_series_data.copy()
-        dce_data_with_inf[0,0,0,self.baseline_time_points+1] = np.inf 
+        dce_data_with_inf[0,0,0,self.baseline_time_points+1] = np.inf
         Ct_inf = conversion.signal_to_concentration(dce_data_with_inf, self.t10_map_data, self.r1, self.TR, self.baseline_time_points)
         self.assertTrue(np.isinf(Ct_inf[0,0,0,self.baseline_time_points+1]) or \
                         np.isnan(Ct_inf[0,0,0,self.baseline_time_points+1]),
@@ -135,11 +135,11 @@ class TestSignalTcToConcentrationTc(unittest.TestCase):
     def setUp(self):
         """Prepare common test data for 1D signal_tc_to_concentration_tc."""
         self.num_time_points = 10
-        self.signal_tc_ideal = np.ones(self.num_time_points) * 100  
-        self.signal_tc_ideal[5:] *= 1.5 
-        self.t10_scalar = 1.0 
-        self.r1_scalar = 4.5 
-        self.TR_scalar = 0.005 
+        self.signal_tc_ideal = np.ones(self.num_time_points) * 100
+        self.signal_tc_ideal[5:] *= 1.5
+        self.t10_scalar = 1.0
+        self.r1_scalar = 4.5
+        self.TR_scalar = 0.005
         self.baseline_pts_ideal = 5
 
     def test_tc_conversion_basic_1d(self): # Renamed
@@ -152,7 +152,7 @@ class TestSignalTcToConcentrationTc(unittest.TestCase):
         S_pre_tc_expected = 100.0
         R1_0_tc_expected = 1.0 / self.t10_scalar
         
-        assert_array_almost_equal(Ct_tc[:self.baseline_pts_ideal], 0, decimal=5, 
+        assert_array_almost_equal(Ct_tc[:self.baseline_pts_ideal], 0, decimal=5,
                                   err_msg="Baseline concentration in 1D TC should be zero.")
         
         S_t_enhanced = 150.0
@@ -169,7 +169,7 @@ class TestSignalTcToConcentrationTc(unittest.TestCase):
     def test_tc_baseline_points_variations(self): # New
         """Test different numbers of baseline points for 1D TC."""
         signal_tc = np.array([90., 95., 100., 105., 110., 150., 160., 170., 180., 190.])
-        
+
         Ct_1_baseline = conversion.signal_tc_to_concentration_tc(signal_tc, self.t10_scalar, self.r1_scalar, self.TR_scalar, 1)
         S0_1 = 90.0
         R1_0 = 1.0 / self.t10_scalar
@@ -213,14 +213,14 @@ class TestSignalTcToConcentrationTc(unittest.TestCase):
 
         signal_inf_post_baseline = np.array([100., 100., 100., np.inf, 160.])
         Ct_inf_post_baseline = conversion.signal_tc_to_concentration_tc(signal_inf_post_baseline, self.t10_scalar, self.r1_scalar, self.TR_scalar, 3)
-        self.assertTrue(np.isinf(Ct_inf_post_baseline[3]) or np.isnan(Ct_inf_post_baseline[3]), 
+        self.assertTrue(np.isinf(Ct_inf_post_baseline[3]) or np.isnan(Ct_inf_post_baseline[3]),
                         "Inf signal should lead to Inf or NaN Ct.")
 
 
     def test_tc_conversion_edge_cases(self): # Existing, verified and slightly enhanced
         """Test edge cases for 1D TC conversion."""
         signal_tc_zero_baseline = np.zeros_like(self.signal_tc_ideal)
-        signal_tc_zero_baseline[self.baseline_pts_ideal:] = 50 
+        signal_tc_zero_baseline[self.baseline_pts_ideal:] = 50
         
         Ct_tc_zero_baseline = conversion.signal_tc_to_concentration_tc(
             signal_tc_zero_baseline, self.t10_scalar, self.r1_scalar, self.TR_scalar, self.baseline_pts_ideal
@@ -230,10 +230,10 @@ class TestSignalTcToConcentrationTc(unittest.TestCase):
         assert_array_almost_equal(Ct_tc_zero_baseline[:self.baseline_pts_ideal], expected_ct_baseline_for_zero_signal_zero_S0, decimal=5,
                                   err_msg="Ct for zero signal with zero S0 (epsilon) incorrect.")
 
-        signal_tc_high = np.ones_like(self.signal_tc_ideal) * 10 
-        signal_tc_high[self.baseline_pts_ideal] = 10 * 210 
+        signal_tc_high = np.ones_like(self.signal_tc_ideal) * 10
+        signal_tc_high[self.baseline_pts_ideal] = 10 * 210
         
-        t10_for_clip = 1.0 
+        t10_for_clip = 1.0
         Ct_tc_high_signal = conversion.signal_tc_to_concentration_tc(
             signal_tc_high, t10_for_clip, self.r1_scalar, self.TR_scalar, self.baseline_pts_ideal
         )
