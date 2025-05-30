@@ -1,20 +1,49 @@
 import numpy as np
 import csv
 
-def calculate_roi_statistics(data_map_slice: np.ndarray, roi_mask_slice: np.ndarray) -> dict | None:
+"""
+This module provides functions for generating and saving reports based on
+pharmacokinetic model fitting results, particularly focusing on Region of Interest (ROI)
+statistics.
+
+It includes utilities to:
+- Calculate descriptive statistics (mean, median, stddev, etc.) for parameter
+  map values within specified ROIs.
+- Format these statistics into human-readable strings.
+- Save aggregated ROI statistics from multiple parameter maps and ROIs into
+  a structured CSV file.
+"""
+
+def calculate_roi_statistics(data_map_slice: np.ndarray, roi_mask_slice: np.ndarray) -> dict:
     """
     Calculates basic statistics for values within an ROI on a 2D data slice.
 
+    The statistics include total number of pixels in ROI ('N'), number of valid (non-NaN)
+    pixels ('N_valid'), mean, standard deviation, median, minimum, and maximum of
+    the valid pixel values.
+
     Args:
-        data_map_slice (np.ndarray): The 2D NumPy array of the data slice.
+        data_map_slice (np.ndarray): The 2D NumPy array of the parameter map slice.
         roi_mask_slice (np.ndarray): A 2D boolean NumPy array of the same shape as
-                                     data_map_slice, where True indicates pixels
+                                     `data_map_slice`, where True indicates pixels
                                      within the ROI.
 
     Returns:
-        dict | None: A dictionary containing statistics (N, Mean, StdDev, Median, Min, Max)
-                     if the ROI contains valid data points. Returns a dict with N=0 and NaN for
-                     stats if ROI is empty or all values are NaN. Returns None if inputs are invalid.
+        dict: A dictionary containing the calculated statistics:
+              {
+                  "N": int,             # Total pixels in ROI
+                  "N_valid": int,       # Number of non-NaN pixels in ROI
+                  "Mean": float,
+                  "StdDev": float,
+                  "Median": float,
+                  "Min": float,
+                  "Max": float
+              }
+              If the ROI is empty or all values within the ROI are NaN, 'N' and 'N_valid'
+              will be 0, and other statistics will be np.nan.
+
+    Raises:
+        ValueError: If input arrays are not 2D or have mismatched shapes.
     """
     if not isinstance(data_map_slice, np.ndarray) or data_map_slice.ndim != 2:
         raise ValueError("data_map_slice must be a 2D NumPy array.")
@@ -23,42 +52,51 @@ def calculate_roi_statistics(data_map_slice: np.ndarray, roi_mask_slice: np.ndar
     if data_map_slice.shape != roi_mask_slice.shape:
         raise ValueError("data_map_slice and roi_mask_slice must have the same shape.")
 
-    # Ensure roi_mask_slice is boolean
-    roi_mask_slice = roi_mask_slice.astype(bool)
+    # Ensure roi_mask_slice is boolean, as it might be passed as int/float
+    roi_mask_slice_bool = roi_mask_slice.astype(bool)
     
-    roi_values = data_map_slice[roi_mask_slice]
+    # Extract values from the data map slice that fall within the ROI
+    roi_values = data_map_slice[roi_mask_slice_bool]
 
-    if roi_values.size == 0:
+    if roi_values.size == 0: # No pixels in the ROI
         return {"N": 0, "N_valid": 0, "Mean": np.nan, "StdDev": np.nan, 
                 "Median": np.nan, "Min": np.nan, "Max": np.nan}
     
+    # Calculate statistics, ignoring NaNs where appropriate
     stats = {
-        "N": roi_values.size, 
-        "N_valid": np.sum(~np.isnan(roi_values)), 
-        "Mean": np.nanmean(roi_values),
-        "StdDev": np.nanstd(roi_values),
-        "Median": np.nanmedian(roi_values),
-        "Min": np.nanmin(roi_values),
-        "Max": np.nanmax(roi_values)
+        "N": roi_values.size,                        # Total number of pixels in the ROI
+        "N_valid": np.sum(~np.isnan(roi_values)),    # Number of valid (non-NaN) pixels
+        "Mean": np.nanmean(roi_values),              # Mean of non-NaN values
+        "StdDev": np.nanstd(roi_values),             # Standard deviation of non-NaN values
+        "Median": np.nanmedian(roi_values),          # Median of non-NaN values
+        "Min": np.nanmin(roi_values),                # Minimum of non-NaN values
+        "Max": np.nanmax(roi_values)                 # Maximum of non-NaN values
     }
     return stats
 
 def format_roi_statistics_to_string(stats_dict: dict | None, map_name: str, roi_name: str = "ROI") -> str:
     """
-    Formats ROI statistics into a human-readable string.
+    Formats ROI statistics from a dictionary into a human-readable string.
 
     Args:
-        stats_dict (dict | None): Dictionary of statistics from calculate_roi_statistics.
-        map_name (str): Name of the map on which statistics were calculated.
-        roi_name (str, optional): Name of the ROI. Defaults to "ROI".
+        stats_dict (dict | None): Dictionary of statistics, typically from
+                                  `calculate_roi_statistics`. If None or if
+                                  'N_valid' is 0, a message indicating no
+                                  valid data is returned.
+        map_name (str): Name of the parameter map for which statistics were calculated
+                        (e.g., "Ktrans", "Ve").
+        roi_name (str, optional): Name of the ROI (e.g., "Tumor Core", "Whole Lesion").
+                                  Defaults to "ROI".
 
     Returns:
-        str: A formatted string of the statistics.
+        str: A multi-line formatted string of the statistics, or a message
+             if no valid data is available.
     """
-    if stats_dict is None or stats_dict.get("N_valid", 0) == 0:
-        return f"No valid data in {roi_name} for '{map_name}'."
+    # Check if the statistics dictionary is valid and contains data
+    if stats_dict is None or not isinstance(stats_dict, dict) or stats_dict.get("N_valid", 0) == 0:
+        return f"No valid data points found in {roi_name} for parameter map '{map_name}'."
 
-    lines = [f"Statistics for {roi_name} on '{map_name}':"]
+    lines = [f"Statistics for {roi_name} on parameter map '{map_name}':"]
     for key, value in stats_dict.items():
         if isinstance(value, float):
             lines.append(f"  {key}: {value:.4f}")
@@ -73,69 +111,98 @@ def save_multiple_roi_statistics_csv(
     '''
     Saves statistics for multiple ROIs to a single CSV file.
     Args:
-        stats_results_list: A list of tuples, where each tuple is
-                            (map_name, slice_index, roi_name, stats_dict).
-        filepath: Path to the CSV file to save.
-    '''
+        stats_results_list (list[tuple[str, int, str, dict]]):
+            A list of tuples, where each tuple contains:
+            - map_name (str): Name of the parameter map (e.g., "Ktrans").
+            - slice_index (int): Z-slice index from which the ROI was taken.
+            - roi_name (str): Name of the ROI (e.g., "Tumor_Slice10").
+            - stats_dict (dict): Dictionary of statistics for this ROI/map/slice,
+                                 as returned by `calculate_roi_statistics`.
+        filepath (str): Path to the CSV file where the statistics will be saved.
+
+    Raises:
+        IOError: If an error occurs during file writing.
+        Exception: For other unexpected errors during the process.
+    """
     if not stats_results_list:
-        print("No statistics provided to save_multiple_roi_statistics_csv.")
-        # Create an empty file with headers if desired, or just return
-        # For now, just return to avoid empty file creation without explicit need
+        # It might be desirable to log this or inform the user.
+        # For now, if the list is empty, we simply don't create a file.
+        print("No statistics provided to save_multiple_roi_statistics_csv. CSV file will not be created.")
         return
 
-    # Define fieldnames based on typical stats_dict keys plus context
-    # Assuming all stats_dicts in the list have the same keys (N, Mean, StdDev, etc.)
-    # Find the first valid stats_dict to determine keys
+    # Determine the fieldnames for the CSV file.
+    # These include contextual information (MapName, SliceIndex, ROIName)
+    # and the actual statistical measures (Mean, Median, etc.).
+    # We try to get the stat keys from the first valid dictionary to ensure all are captured.
     first_valid_stats_dict = None
-    for _, _, _, s_dict in stats_results_list:
-        if s_dict and s_dict.get("N_valid", 0) > 0 : # Check N_valid for actual content
+    for _, _, _, s_dict in stats_results_list: # Iterate to find a non-empty/valid stats_dict
+        if s_dict and s_dict.get("N_valid", 0) > 0 : # Check if it has valid data points
             first_valid_stats_dict = s_dict
             break
     
-    if not first_valid_stats_dict: 
-         # If no ROI has valid stats, use default keys or write an empty file.
-         # For now, if all ROIs are empty/NaN, the output file will just have headers.
-         stat_keys = ["N", "N_valid", "Mean", "StdDev", "Median", "Min", "Max"] # Default/expected keys
+    if not first_valid_stats_dict:
+         # If all ROIs are empty or only contain NaNs, use a default set of stat keys.
+         # This ensures the CSV still has the correct headers for stats columns.
+         stat_keys = ["N", "N_valid", "Mean", "StdDev", "Median", "Min", "Max"]
     else:
-         stat_keys = list(first_valid_stats_dict.keys())
+         stat_keys = list(first_valid_stats_dict.keys()) # Get keys from the first valid dict
 
+    # Standard headers for context, followed by the dynamically obtained statistic keys
     fieldnames = ['MapName', 'SliceIndex', 'ROIName'] + stat_keys
 
     try:
         with open(filepath, 'w', newline='') as csvfile:
             writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-            writer.writeheader()
-            for map_name, slice_idx, roi_name, stats_dict_for_roi in stats_results_list:
-                if stats_dict_for_roi: # Ensure there are stats to write
-                    row_data = {
-                        'MapName': map_name,
-                        'SliceIndex': slice_idx,
-                        'ROIName': roi_name
-                    }
-                    # Ensure all stat_keys are present in row_data, defaulting to 'N/A' or np.nan if missing in this specific dict
-                    for skey in stat_keys:
-                        row_data[skey] = stats_dict_for_roi.get(skey, np.nan) # or "N/A" if preferred for CSV
+            writer.writeheader() # Write the header row
 
-                    writer.writerow(row_data)
-                else: # Write basic info even if stats are null/empty for this particular ROI
-                    # Create a row with N/A for stat values
-                    empty_stat_row = {'MapName': map_name, 'SliceIndex': slice_idx, 'ROIName': roi_name}
+            for map_name, slice_idx, roi_name, stats_dict_for_roi in stats_results_list:
+                row_data = {
+                    'MapName': map_name,
+                    'SliceIndex': slice_idx,
+                    'ROIName': roi_name
+                }
+                if stats_dict_for_roi: # If stats_dict is not None
+                    # Populate the row with actual statistics
+                    # Use .get(key, np.nan) to handle cases where a specific stat might be missing
+                    # (though calculate_roi_statistics should be consistent).
                     for skey in stat_keys:
-                        empty_stat_row[skey] = "N/A" # Or np.nan, but "N/A" is clearer in CSV
-                    writer.writerow(empty_stat_row)
+                        row_data[skey] = stats_dict_for_roi.get(skey, np.nan)
+                else:
+                    # If stats_dict_for_roi is None (e.g., an error occurred for this ROI earlier),
+                    # fill stat columns with NaN or a placeholder.
+                    for skey in stat_keys:
+                        row_data[skey] = np.nan # Or "Error" / "N/A"
+                
+                writer.writerow(row_data)
+        print(f"Multiple ROI statistics saved to: {filepath}")
     except IOError as e:
         raise IOError(f"Error writing ROI statistics to CSV file {filepath}: {e}")
-    except Exception as e: 
-        raise Exception(f"An unexpected error occurred while saving ROI statistics: {e}")
+    except Exception as e: # Catch any other unexpected errors
+        raise Exception(f"An unexpected error occurred while saving multiple ROI statistics to CSV: {e}")
 
 # Keep the old function for now, or mark as deprecated.
 # For this task, we'll just leave it. If it's not used, it can be removed later.
 def save_roi_statistics_csv(stats_dict: dict, filepath: str, map_name: str, roi_name: str = "ROI"):
     """
-    Saves ROI statistics to a CSV file. (Old version for single ROI)
+    Saves statistics for a single ROI to a CSV file.
+    (Note: This is an older version, consider using `save_multiple_roi_statistics_csv`
+     for more comprehensive reporting across multiple ROIs/maps.)
+
+    The CSV format is: MapName, ROIName, Statistic, Value.
+
+    Args:
+        stats_dict (dict): Dictionary of statistics (e.g., from `calculate_roi_statistics`).
+        filepath (str): Path to the CSV file.
+        map_name (str): Name of the parameter map.
+        roi_name (str, optional): Name of the ROI. Defaults to "ROI".
+
+    Raises:
+        ValueError: If `stats_dict` is empty or None.
+        IOError: If an error occurs during file writing.
     """
-    if not stats_dict:
-        raise ValueError("No statistics data to save.")
+    if not stats_dict: # Check if the dictionary is empty or None
+        raise ValueError("No statistics data provided to save.")
+        
     fieldnames = ['MapName', 'ROIName', 'Statistic', 'Value']
     try:
         with open(filepath, 'w', newline='') as csvfile:

@@ -1,5 +1,14 @@
 import numpy as np
 
+"""
+This module provides functions for converting DCE-MRI signal intensity data
+to contrast agent concentration maps or time-courses. These conversions
+are fundamental steps in pharmacokinetic analysis of DCE-MRI data.
+
+The primary methods rely on the relationship between signal intensity changes
+and T1 relaxation time changes induced by the contrast agent.
+"""
+
 def signal_to_concentration(
     dce_series_data: np.ndarray,
     t10_map_data: np.ndarray,
@@ -81,17 +90,25 @@ def signal_to_concentration(
     # Add epsilon to S_pre_expanded to avoid division by zero.
     S_pre_safe = np.where(S_pre_expanded == 0, 1e-9, S_pre_expanded)
     
-    signal_ratio_term = dce_series_data / S_pre_safe
-    E1_0_term = 1.0 - np.exp(-TR * R1_0_expanded)
+    # Calculate S(t)/S_pre term
+    signal_ratio_term = dce_series_data / S_pre_safe # Shape (x,y,z,time)
+    # Calculate (1 - exp(-TR * R1_0)) term
+    E1_0_term = 1.0 - np.exp(-TR * R1_0_expanded) # Shape (x,y,z,1)
     
-    log_arg = 1.0 - signal_ratio_term * E1_0_term
-    log_arg = np.maximum(log_arg, 1e-9) # Clip to avoid log(0) or log(negative)
+    # Argument for the logarithm: 1 - (S(t)/S_pre) * (1 - exp(-TR * R1_0))
+    log_arg = 1.0 - signal_ratio_term * E1_0_term # Shape (x,y,z,time)
+    # Clip log_arg to a small positive number to prevent log(0) or log(negative values)
+    # This can happen due to noise or if S(t) is much higher than S_pre
+    log_arg = np.maximum(log_arg, 1e-9) 
     
-    R1_t = (-1.0 / TR) * np.log(log_arg)
-    delta_R1_t = R1_t - R1_0_expanded
+    # Calculate R1(t) = (-1/TR) * ln(log_arg)
+    R1_t = (-1.0 / TR) * np.log(log_arg) # Shape (x,y,z,time)
+    # Calculate Delta_R1(t) = R1(t) - R1_0
+    delta_R1_t = R1_t - R1_0_expanded # Shape (x,y,z,time)
     
-    # Add epsilon to r1_relaxivity in denominator (already checked >0, but good practice)
-    Ct_data = delta_R1_t / (r1_relaxivity + 1e-9)
+    # Calculate concentration C(t) = Delta_R1(t) / r1_relaxivity
+    # Add epsilon to r1_relaxivity in denominator (already checked >0, but good practice for numerical stability)
+    Ct_data = delta_R1_t / (r1_relaxivity + 1e-9) # Shape (x,y,z,time)
 
     return Ct_data
 
@@ -143,21 +160,31 @@ def signal_tc_to_concentration_tc(
         raise ValueError("signal_tc cannot be empty.")
 
     S_pre_tc = np.mean(signal_tc[:baseline_time_points])
-    S_pre_tc = S_pre_tc if S_pre_tc > 1e-9 else 1e-9  # Avoid division by zero
+    S_pre_tc = S_pre_tc if S_pre_tc > 1e-9 else 1e-9  # Avoid division by zero or very small S_pre_tc
 
-    R1_0_scalar = 1.0 / (t10_scalar + 1e-9)
+    # Calculate R1_0 (pre-contrast relaxation rate)
+    R1_0_scalar = 1.0 / (t10_scalar + 1e-9) # Add epsilon to t10_scalar to avoid division by zero
+    # Calculate (1 - exp(-TR * R1_0))
     E1_0_term = (1.0 - np.exp(-TR * R1_0_scalar))
     
     Ct_tc = np.zeros_like(signal_tc, dtype=float)
 
+    # Iterate through each time point in the signal time-course
     for i in range(len(signal_tc)):
         S_t_current = signal_tc[i]
+        # Calculate S(t)/S_pre for the current time point
         signal_ratio_term = S_t_current / S_pre_tc
-        log_arg = 1.0 - signal_ratio_term * E1_0_term
-        log_arg = np.maximum(log_arg, 1e-9)  # Clipping
         
+        # Argument for the logarithm: 1 - (S(t)/S_pre) * (1 - exp(-TR * R1_0))
+        log_arg = 1.0 - signal_ratio_term * E1_0_term
+        # Clip log_arg to prevent log(0) or log(negative values)
+        log_arg = np.maximum(log_arg, 1e-9)
+        
+        # Calculate R1(t) for the current time point
         R1_t_current = (-1.0 / TR) * np.log(log_arg)
+        # Calculate Delta_R1(t) = R1(t) - R1_0
         delta_R1_t_current = R1_t_current - R1_0_scalar
+        # Calculate concentration C(t) = Delta_R1(t) / r1_relaxivity
         Ct_tc[i] = delta_R1_t_current / (r1_relaxivity + 1e-9) # Add epsilon to r1_relaxivity
         
     return Ct_tc

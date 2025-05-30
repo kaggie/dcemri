@@ -47,6 +47,16 @@ This tool is being developed to enable researchers and clinicians to load and ma
     *   Basic Graphical User Interface (GUI) for all functionalities.
     *   Logging of operations, loaded file details, and any errors encountered.
 
+## Documentation and Guides
+
+For detailed information on using the tool, understanding the implemented models, and advanced topics, please refer to the documentation in the `wiki/` directory of this repository.
+
+Key documents include:
+*   `wiki/01_Basic_Usage.md`: Step-by-step guide for GUI and CLI.
+*   `wiki/02_Advanced_Topics.md`: In-depth information on AIF management, parallel processing, and troubleshooting.
+*   `wiki/03_Model_Descriptions.md`: Descriptions of the pharmacokinetic models.
+*   `wiki/04_Literature_References.md`: Citations for the algorithms and models used.
+
 ## Batch Processing
 *   Initial command-line interface (`batch_processor.py`) for processing a single dataset without the GUI.
 *   Supports specification of input files, AIF (file or population model with parameters), processing parameters, model choice, and output directory via CLI arguments.
@@ -158,6 +168,9 @@ Voxel-wise operations (like pharmacokinetic model fitting) can be time-consuming
 *   **Output and Reporting:**
     *   More comprehensive export options (e.g., aggregated reports, saving plots from batch mode).
     *   Saving and loading of analysis "sessions" or "projects".
+
+For a list of planned features and potential areas for future development, please see the `improvements.md` file in the project root.
+Summaries of key scientific literature underpinning the models and AIFs implemented can be found in `literature.md`.
 
 ## Contributing
 

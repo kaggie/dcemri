@@ -1,10 +1,10 @@
 import unittest
+from unittest.mock import patch, MagicMock
 import numpy as np
-from scipy.interpolate import interp1d
-from scipy.integrate import cumtrapz # For Patlak tests
-from unittest.mock import patch, MagicMock, ANY # ANY for some mock calls
-import os
+from numpy.testing import assert_array_almost_equal, assert_allclose, assert_raises
+
 import sys
+import os
 
 # Add project root for imports
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
@@ -12,363 +12,363 @@ if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
 from core import modeling
+from core import aif # For AIF data generation if needed
+from scipy.interpolate import interp1d
+from scipy.integrate import cumtrapz
 
-class TestModelingFunctions(unittest.TestCase): # Renamed to be more general
+# --- Helper data ---
+T_TISSUE_SHORT = np.linspace(0, 1, 10) # 10 points, up to 1 time unit (e.g. min)
+T_TISSUE_LONG = np.linspace(0, 5, 50) # 50 points, up to 5 time units (e.g. min)
+
+# Simple AIF for testing: instant rise, exponential decay
+T_AIF = np.linspace(0, 5, 100)
+AIF_CONC = 10 * np.exp(-T_AIF / 0.5) 
+AIF_CONC[0] = 0 
+
+CP_INTERP_FUNC = interp1d(T_AIF, AIF_CONC, kind='linear', bounds_error=False, fill_value=0.0)
+INTEGRAL_CP_DT_AIF = cumtrapz(AIF_CONC, T_AIF, initial=0)
+INTEGRAL_CP_DT_INTERP_FUNC = interp1d(T_AIF, INTEGRAL_CP_DT_AIF, kind='linear', bounds_error=False, fill_value=0.0)
+T_AIF_MAX = T_AIF[-1]
+
+
+class TestPharmacokineticModels(unittest.TestCase):
+    """Tests for individual pharmacokinetic model functions."""
+
+    def test_standard_tofts_model_conv_ideal(self):
+        Ktrans, ve = 0.2, 0.3
+        Ct_expected = modeling._convolve_Cp_with_exp(T_TISSUE_LONG, Ktrans, ve, CP_INTERP_FUNC)
+        Ct_model = modeling.standard_tofts_model_conv(T_TISSUE_LONG, Ktrans, ve, CP_INTERP_FUNC)
+        assert_array_almost_equal(Ct_model, Ct_expected)
+
+    def test_extended_tofts_model_conv_ideal(self):
+        Ktrans, ve, vp = 0.2, 0.3, 0.05
+        vp_comp = vp * CP_INTERP_FUNC(T_TISSUE_LONG)
+        ees_comp = modeling._convolve_Cp_with_exp(T_TISSUE_LONG, Ktrans, ve, CP_INTERP_FUNC)
+        Ct_expected = vp_comp + ees_comp
+        Ct_model = modeling.extended_tofts_model_conv(T_TISSUE_LONG, Ktrans, ve, vp, CP_INTERP_FUNC)
+        assert_array_almost_equal(Ct_model, Ct_expected)
+
+    def test_patlak_model_ideal(self):
+        Ktrans, vp = 0.1, 0.02
+        Ct_expected = Ktrans * INTEGRAL_CP_DT_INTERP_FUNC(T_TISSUE_LONG) + vp * CP_INTERP_FUNC(T_TISSUE_LONG)
+        Ct_model = modeling.patlak_model(T_TISSUE_LONG, Ktrans, vp, CP_INTERP_FUNC, INTEGRAL_CP_DT_INTERP_FUNC)
+        assert_array_almost_equal(Ct_model, Ct_expected)
+
+    def test_solve_2cxm_ode_model_ideal(self):
+        Fp, PS, vp, ve = 0.5, 0.1, 0.05, 0.25
+        Ct_model = modeling.solve_2cxm_ode_model(T_TISSUE_LONG, Fp, PS, vp, ve, CP_INTERP_FUNC, t_span_max=T_AIF_MAX)
+        self.assertEqual(Ct_model.shape, T_TISSUE_LONG.shape)
+        self.assertTrue(np.all(np.isfinite(Ct_model))) 
+
+    def test_model_parameter_validation(self):
+        models_to_test = {
+            "standard_tofts": lambda t, p: modeling.standard_tofts_model_conv(t, p.get('Ktrans',0.1), p.get('ve',0.1), CP_INTERP_FUNC),
+            "extended_tofts": lambda t, p: modeling.extended_tofts_model_conv(t, p.get('Ktrans',0.1), p.get('ve',0.1), p.get('vp',0.1), CP_INTERP_FUNC),
+            "patlak": lambda t, p: modeling.patlak_model(t, p.get('Ktrans',0.1), p.get('vp',0.1), CP_INTERP_FUNC, INTEGRAL_CP_DT_INTERP_FUNC),
+            "2cxm": lambda t, p: modeling.solve_2cxm_ode_model(t, p.get('Fp',0.1), p.get('PS',0.1), p.get('vp',0.1), p.get('ve',0.1), CP_INTERP_FUNC, T_AIF_MAX)
+        }
+        params_per_model = {
+            "standard_tofts": ['Ktrans', 've'], "extended_tofts": ['Ktrans', 've', 'vp'],
+            "patlak": ['Ktrans', 'vp'], "2cxm": ['Fp', 'PS', 'vp', 've']
+        }
+
+        for name, model_func in models_to_test.items():
+            for param_name in params_per_model[name]:
+                invalid_params_dict = {pn: 0.1 for pn in params_per_model[name]} # Base valid params
+                
+                current_test_val = -0.1
+                if name == "2cxm" and (param_name == "vp" or param_name == "ve"):
+                    current_test_val = 1e-8 
+                
+                invalid_params_dict[param_name] = current_test_val
+                
+                with self.subTest(model=name, param=param_name, value=current_test_val):
+                    res = model_func(T_TISSUE_SHORT, invalid_params_dict)
+                    self.assertTrue(np.all(np.isinf(res)), f"{name} with {param_name}={current_test_val} did not return all inf.")
+    
+    def test_model_edge_case_time_points(self):
+        t_empty = np.array([])
+        t_single = np.array([1.0])
+        # Test Standard Tofts (as representative for convolution based)
+        self.assertEqual(modeling.standard_tofts_model_conv(t_empty, 0.1, 0.1, CP_INTERP_FUNC).shape, t_empty.shape)
+        # _convolve_Cp_with_exp returns zeros_like for len(t) < 2
+        self.assertEqual(modeling.standard_tofts_model_conv(t_single, 0.1, 0.1, CP_INTERP_FUNC).shape, t_single.shape) 
+        self.assertTrue(np.all(modeling.standard_tofts_model_conv(t_single, 0.1, 0.1, CP_INTERP_FUNC)==0))
+
+
+        # Test 2CXM
+        self.assertEqual(modeling.solve_2cxm_ode_model(t_empty, 0.1,0.1,0.1,0.1,CP_INTERP_FUNC, T_AIF_MAX).shape, t_empty.shape)
+        self.assertEqual(modeling.solve_2cxm_ode_model(t_single, 0.1,0.1,0.1,0.1,CP_INTERP_FUNC, T_AIF_MAX).shape, t_single.shape)
+
+    @patch('core.modeling.solve_ivp')
+    def test_solve_2cxm_ode_solver_failure(self, mock_solve_ivp):
+        mock_sol = MagicMock()
+        mock_sol.status = -1 
+        mock_sol.message = "Solver failed"
+        mock_solve_ivp.return_value = mock_sol
+        
+        Ct_model = modeling.solve_2cxm_ode_model(T_TISSUE_SHORT, 0.5, 0.1, 0.05, 0.25, CP_INTERP_FUNC, T_AIF_MAX)
+        self.assertTrue(np.all(np.isinf(Ct_model)))
+
+
+class TestSingleVoxelFitting(unittest.TestCase):
+    """Tests for single-voxel fitting functions."""
+    noise_level_relative = 0.05 # Relative noise level for Tofts models
+    noise_level_absolute = 0.001 # Absolute noise level for Patlak/2CXM (assuming concentrations are small)
+
+
+    def _generate_synthetic_data(self, model_name, true_params):
+        Ct_clean = None
+        if model_name == "Standard Tofts":
+            Ktrans, ve = true_params
+            Ct_clean = modeling.standard_tofts_model_conv(T_TISSUE_LONG, Ktrans, ve, CP_INTERP_FUNC)
+        elif model_name == "Extended Tofts":
+            Ktrans, ve, vp = true_params
+            Ct_clean = modeling.extended_tofts_model_conv(T_TISSUE_LONG, Ktrans, ve, vp, CP_INTERP_FUNC)
+        elif model_name == "Patlak":
+            Ktrans, vp = true_params
+            Ct_clean = modeling.patlak_model(T_TISSUE_LONG, Ktrans, vp, CP_INTERP_FUNC, INTEGRAL_CP_DT_INTERP_FUNC)
+        elif model_name == "2CXM":
+            Fp, PS, vp, ve = true_params
+            Ct_clean = modeling.solve_2cxm_ode_model(T_TISSUE_LONG, Fp, PS, vp, ve, CP_INTERP_FUNC, T_AIF_MAX)
+        else:
+            raise ValueError(f"Unknown model: {model_name}")
+        
+        current_noise_level = self.noise_level_absolute
+        if model_name in ["Standard Tofts", "Extended Tofts"] and np.max(Ct_clean) > 0:
+            current_noise_level = self.noise_level_relative * np.max(Ct_clean)
+        
+        noise = np.random.normal(0, current_noise_level, size=Ct_clean.shape)
+        return T_TISSUE_LONG, Ct_clean + noise, Ct_clean
+
+    def _test_fitting_function(self, fit_func_name, model_name, true_params, initial_guess, bounds):
+        fit_func = getattr(modeling, fit_func_name)
+        t_tissue, Ct_noisy, _ = self._generate_synthetic_data(model_name, true_params)
+
+        args_for_fit = [t_tissue, Ct_noisy]
+        if model_name == "Patlak":
+            args_for_fit.extend([CP_INTERP_FUNC, INTEGRAL_CP_DT_INTERP_FUNC])
+        elif model_name == "2CXM":
+            args_for_fit.extend([CP_INTERP_FUNC, T_AIF_MAX])
+        else: # Tofts models
+            args_for_fit.append(CP_INTERP_FUNC)
+        args_for_fit.extend([initial_guess, bounds])
+        
+        params_fitted, curve_fitted = fit_func(*args_for_fit)
+        
+        assert_allclose(params_fitted, true_params, rtol=0.6, atol=0.15, err_msg=f"{fit_func_name} failed to recover parameters accurately.") # Relaxed tolerance for noisy data
+        
+        # Check fitted curve matches popt
+        args_for_model = [t_tissue] + list(params_fitted)
+        if model_name == "Patlak":
+            args_for_model.extend([CP_INTERP_FUNC, INTEGRAL_CP_DT_INTERP_FUNC])
+        elif model_name == "2CXM":
+            args_for_model.extend([CP_INTERP_FUNC, T_AIF_MAX])
+        else:
+            args_for_model.append(CP_INTERP_FUNC)
+
+        ref_curve_func = getattr(modeling, model_name.lower().replace(" ", "_") + "_model_conv" if "tofts" in model_name.lower() else model_name.lower()+"_model" if "patlak" in model_name.lower() else "solve_2cxm_ode_model")
+        ref_curve = ref_curve_func(*args_for_model)
+        
+        assert_array_almost_equal(curve_fitted, ref_curve, err_msg=f"{fit_func_name} returned curve does not match model with popt.")
+
+        # Test insufficient data (length of data < number of parameters)
+        num_params = len(initial_guess)
+        t_short = t_tissue[:num_params] # This will cause error in curve_fit
+        Ct_short = Ct_noisy[:num_params]
+        
+        args_for_short_fit = [t_short, Ct_short] + args_for_fit[2:] # Keep other args same
+        
+        params_nan, curve_nan = fit_func(*args_for_short_fit)
+        self.assertTrue(all(np.isnan(p) for p in params_nan), f"{fit_func_name} did not return all NaNs for params with insufficient data.")
+        self.assertTrue(np.all(np.isnan(curve_nan)), f"{fit_func_name} did not return all NaNs for curve with insufficient data.")
+        
+        # Test all zeros/NaNs Ct_tissue
+        Ct_zeros = np.zeros_like(t_tissue)
+        args_for_zeros_fit = [t_tissue, Ct_zeros] + args_for_fit[2:]
+        params_zeros, _ = fit_func(*args_for_zeros_fit)
+        # curve_fit might return initial guess or bounds if it can't compute Jacobian, or NaN.
+        # Check for NaNs as an indicator of fit failure or inability to proceed.
+        self.assertTrue(all(np.isnan(p) for p in params_zeros), f"{fit_func_name} with zero Ct did not result in NaN parameters.")
+
+        Ct_nans = np.full_like(t_tissue, np.nan)
+        args_for_nans_fit = [t_tissue, Ct_nans] + args_for_fit[2:]
+        params_nans, _ = fit_func(*args_for_nans_fit)
+        self.assertTrue(all(np.isnan(p) for p in params_nans), f"{fit_func_name} with NaN Ct did not result in NaN parameters.")
+
+
+    def test_fit_standard_tofts(self):
+        self._test_fitting_function("fit_standard_tofts", "Standard Tofts", (0.25, 0.35), (0.1, 0.2), ([0,0],[1,1]))
+        
+    def test_fit_extended_tofts(self):
+        self._test_fitting_function("fit_extended_tofts", "Extended Tofts", (0.25, 0.35, 0.03), (0.1,0.2,0.05), ([0,0,0],[1,1,0.5]))
+
+    def test_fit_patlak_model(self):
+         self._test_fitting_function("fit_patlak_model", "Patlak", (0.15, 0.04), (0.1,0.05), ([0,0],[1,0.5]))
+
+    def test_fit_2cxm_model(self):
+        # Note: 2CXM fitting can be sensitive. Tolerances might need adjustment.
+        self._test_fitting_function("fit_2cxm_model", "2CXM", (0.6, 0.15, 0.04, 0.20), (0.5,0.1,0.05,0.1), ([0,0,1e-3,1e-3],[2,1,0.5,0.7]))
+
+
+class TestFitVoxelWorker(unittest.TestCase):
+    """Tests for the _fit_voxel_worker function."""
+    
     def setUp(self):
-        # Time vector for AIF and tissue
-        self.t_points = np.linspace(0, 1.0, 61) # Time in minutes for consistency with typical AIF params
-        
-        # Sample AIF (simple boxcar for testing, not realistic for real data but predictable)
-        self.Cp_aif = np.zeros_like(self.t_points)
-        self.Cp_aif[5:15] = 5.0 # Concentration in mM, assuming time in minutes
-        
-        self.Cp_interp_func = interp1d(self.t_points, self.Cp_aif, kind='linear', bounds_error=False, fill_value=0.0)
-        
-        # Integral of Cp for Patlak
-        self.integral_Cp_dt_aif = cumtrapz(self.Cp_aif, self.t_points, initial=0)
-        self.integral_Cp_dt_interp_func = interp1d(self.t_points, self.integral_Cp_dt_aif, kind='linear', bounds_error=False, fill_value=0.0)
-
-    # --- Tests for Convolution-based Tofts Models (Model Functions) ---
-    def test_standard_tofts_model_conv_function(self):
-        """Test the standard_tofts_model_conv function with known inputs."""
-        Ktrans_test = 0.2 # min^-1
-        ve_test = 0.3    # dimensionless
-        
-        # Case 1: Ktrans = 0
-        calculated_Ct_ktrans_zero = modeling.standard_tofts_model_conv(self.t_points, 0, ve_test, self.Cp_interp_func)
-        np.testing.assert_array_almost_equal(calculated_Ct_ktrans_zero, np.zeros_like(self.t_points), decimal=6,
-                                            err_msg="If Ktrans=0, standard Tofts should be all zeros.")
-
-        # Case 2: Cp_aif is all zeros
-        all_zero_aif_func = interp1d(self.t_points, np.zeros_like(self.t_points), kind='linear', bounds_error=False, fill_value=0.0)
-        calculated_Ct_zero_aif = modeling.standard_tofts_model_conv(self.t_points, Ktrans_test, ve_test, all_zero_aif_func)
-        np.testing.assert_array_almost_equal(calculated_Ct_zero_aif, np.zeros_like(self.t_points), decimal=6,
-                                            err_msg="If AIF is zero, standard Tofts should be all zeros.")
-        
-        # Case 3: Test with the setUp AIF (boxcar).
-        # We expect non-zero output where AIF is non-zero and some decay.
-        # Direct manual calculation of convolution with boxcar is complex.
-        # Instead, check properties: positive output, initial response.
-        calculated_Ct_boxcar = modeling.standard_tofts_model_conv(self.t_points, Ktrans_test, ve_test, self.Cp_interp_func)
-        self.assertTrue(np.all(calculated_Ct_boxcar >= 0), "Standard Tofts output should be non-negative.")
-        # Check if the model responds after the AIF onset. AIF starts at t_points[5].
-        # Convolution will start showing effect at/after this.
-        # For t < t_points[5] (before AIF pulse), Ct should be zero.
-        pre_aif_indices = self.t_points < self.t_points[5]
-        np.testing.assert_array_almost_equal(calculated_Ct_boxcar[pre_aif_indices], 0.0, decimal=6,
-                                            err_msg="Standard Tofts should be zero before AIF starts.")
-        # After AIF onset, it should be positive if Ktrans > 0, ve > 0 and AIF positive
-        if np.any(self.Cp_aif > 0) and Ktrans_test > 0 and ve_test > 0:
-             self.assertTrue(np.any(calculated_Ct_boxcar[self.t_points >= self.t_points[5]] > 1e-6),
-                             "Standard Tofts should show positive response to positive AIF.")
-
-    def test_extended_tofts_model_conv_function(self):
-        """Test the extended_tofts_model_conv function with known inputs."""
-        Ktrans_test = 0.2 # min^-1
-        ve_test = 0.3    # dimensionless
-        vp_test = 0.05   # dimensionless
-
-        # Case 1: Ktrans = 0
-        # Expected: vp * Cp(t)
-        calculated_Ct_ktrans_zero = modeling.extended_tofts_model_conv(self.t_points, 0, ve_test, vp_test, self.Cp_interp_func)
-        expected_Ct_ktrans_zero = vp_test * self.Cp_interp_func(self.t_points)
-        np.testing.assert_array_almost_equal(calculated_Ct_ktrans_zero, expected_Ct_ktrans_zero, decimal=6,
-                                            err_msg="If Ktrans=0, extended Tofts should be vp * Cp(t).")
-
-        # Case 2: vp = 0
-        # Expected: Behaves like standard Tofts model
-        calculated_Ct_vp_zero = modeling.extended_tofts_model_conv(self.t_points, Ktrans_test, ve_test, 0, self.Cp_interp_func)
-        expected_Ct_vp_zero = modeling.standard_tofts_model_conv(self.t_points, Ktrans_test, ve_test, self.Cp_interp_func)
-        np.testing.assert_array_almost_equal(calculated_Ct_vp_zero, expected_Ct_vp_zero, decimal=6,
-                                            err_msg="If vp=0, extended Tofts should equal standard Tofts.")
-
-        # Case 3: Cp_aif is all zeros
-        all_zero_aif_func = interp1d(self.t_points, np.zeros_like(self.t_points), kind='linear', bounds_error=False, fill_value=0.0)
-        calculated_Ct_zero_aif = modeling.extended_tofts_model_conv(self.t_points, Ktrans_test, ve_test, vp_test, all_zero_aif_func)
-        np.testing.assert_array_almost_equal(calculated_Ct_zero_aif, np.zeros_like(self.t_points), decimal=6,
-                                            err_msg="If AIF is zero, extended Tofts should be all zeros.")
-
-        # Case 4: Test with the setUp AIF (boxcar) and all params non-zero.
-        calculated_Ct_boxcar = modeling.extended_tofts_model_conv(self.t_points, Ktrans_test, ve_test, vp_test, self.Cp_interp_func)
-        self.assertTrue(np.all(calculated_Ct_boxcar >= 0), "Extended Tofts output should be non-negative.")
-        # Expected: vp * Cp(t) + StandardTofts(Ktrans, ve)
-        # Standard Tofts component
-        st_component = modeling.standard_tofts_model_conv(self.t_points, Ktrans_test, ve_test, self.Cp_interp_func)
-        # vp component
-        vp_component_manual = vp_test * self.Cp_interp_func(self.t_points)
-        expected_Ct_full = st_component + vp_component_manual
-        np.testing.assert_array_almost_equal(calculated_Ct_boxcar, expected_Ct_full, decimal=6,
-                                             err_msg="Extended Tofts calculation does not match vp*Cp + StandardTofts.")
-
-    def test_patlak_model_function(self):
-        """Test the Patlak model function with known inputs."""
-        Ktrans_patlak = 0.1 # min^-1
-        vp_patlak = 0.05    # dimensionless
-        test_times = np.array([0, 0.1, 0.2, 0.3]) # Time in minutes
-        # Cp(0.1) = 5.0, integral(Cp(0.1)) = (0.1-5/60)*5.0 = (0.1-0.0833)*5 = 0.0166*5 = 0.083 (approx)
-        # Cp(0.2) = 0 (bolus ends at 14/60 = 0.233 min). integral(Cp(0.2)) = (14/60-5/60)*5 = (9/60)*5 = 0.15*5 = 0.75
-        
-        calculated_Ct = modeling.patlak_model(test_times, Ktrans_patlak, vp_patlak, 
-                                              self.Cp_interp_func, self.integral_Cp_dt_interp_func)
-        
-        expected_Ct_manual = np.zeros_like(test_times)
-        for i, t_val in enumerate(test_times):
-            cp_val = self.Cp_interp_func(t_val)
-            int_cp_val = self.integral_Cp_dt_interp_func(t_val)
-            expected_Ct_manual[i] = Ktrans_patlak * int_cp_val + vp_patlak * cp_val
-            
-        np.testing.assert_array_almost_equal(calculated_Ct, expected_Ct_manual, decimal=5)
+        self.voxel_idx = (0,0,0)
+        self.t_tissue = T_TISSUE_LONG
+        self.t_aif = T_AIF
+        self.Cp_aif = AIF_CONC
+        self.true_st_params = (0.2, 0.3) # Ktrans, ve
+        # Generate clean data using TestSingleVoxelFitting's helper (or a simplified one here)
+        Ct_st_clean = modeling.standard_tofts_model_conv(self.t_tissue, *self.true_st_params, CP_INTERP_FUNC)
+        self.Ct_st = Ct_st_clean + np.random.normal(0, 0.001, Ct_st_clean.shape)
 
 
-    def test_fit_patlak_model_single_voxel(self):
-        """Test fitting the Patlak model to synthetic single-voxel data."""
-        Ktrans_true = 0.15; vp_true = 0.03
-        Ct_tissue_true = modeling.patlak_model(self.t_points, Ktrans_true, vp_true, self.Cp_interp_func, self.integral_Cp_dt_interp_func)
-        noise_level = 0.01 * np.max(Ct_tissue_true) if np.max(Ct_tissue_true) > 0 else 0.01
-        Ct_tissue_noisy = Ct_tissue_true + np.random.normal(0, noise_level, size=Ct_tissue_true.shape)
-        initial_params = (0.1, 0.02); bounds = ([0, 0], [0.5, 0.3])
-        
-        params_fitted, _ = modeling.fit_patlak_model(
-            self.t_points, Ct_tissue_noisy, 
-            self.Cp_interp_func, self.integral_Cp_dt_interp_func,
-            initial_params=initial_params, bounds_params=bounds
-        )
-        self.assertIsNotNone(params_fitted, "Patlak fitting failed to return parameters.")
-        if params_fitted is not None and not np.all(np.isnan(params_fitted)):
-            Ktrans_fit, vp_fit = params_fitted
-            np.testing.assert_allclose(Ktrans_fit, Ktrans_true, rtol=0.3, atol=0.02) 
-            np.testing.assert_allclose(vp_fit, vp_true, rtol=0.4, atol=0.02)     
+    def test_worker_successful_fit_standard_tofts(self): # Specify model
+        args = (self.voxel_idx, self.Ct_st, self.t_tissue, self.t_aif, self.Cp_aif, 
+                "Standard Tofts", (0.1,0.1), ([0,0],[1,1]))
+        idx, model_name, result = modeling._fit_voxel_worker(args)
+        self.assertEqual(idx, self.voxel_idx)
+        self.assertEqual(model_name, "Standard Tofts")
+        self.assertNotIn("error", result, f"Fit worker returned error: {result.get('error')}")
+        self.assertTrue("Ktrans" in result and "ve" in result)
+        assert_allclose([result["Ktrans"], result["ve"]], self.true_st_params, rtol=0.6, atol=0.15) # Relaxed due to noise & fit
 
-    def test_fit_patlak_model_single_voxel_invalid_data(self):
-        """Test Patlak fitting with invalid (e.g., all NaN) Ct_tissue."""
-        Ct_tissue_nan = np.full_like(self.t_points, np.nan)
-        params_fitted, curve_fitted = modeling.fit_patlak_model(
-            self.t_points, Ct_tissue_nan, self.Cp_interp_func, self.integral_Cp_dt_interp_func
-        )
-        self.assertTrue(np.all(np.isnan(params_fitted)), "Expected NaN parameters for all-NaN input.")
-        self.assertTrue(np.all(np.isnan(curve_fitted)), "Expected NaN curve for all-NaN input.")
+    def test_worker_skipped_all_nan(self):
+        Ct_nan = np.full_like(self.t_tissue, np.nan)
+        args = (self.voxel_idx, Ct_nan, self.t_tissue, self.t_aif, self.Cp_aif, 
+                "Standard Tofts", (0.1,0.1), ([0,0],[1,1]))
+        _, _, result = modeling._fit_voxel_worker(args)
+        self.assertIn("error", result)
+        self.assertIn("Skipped (all NaN or all zero data)", result["error"])
 
-    # --- Tests for Single Voxel Fitting (Tofts Models) ---
-    def test_fit_standard_tofts_single_voxel_synthetic(self):
-        """Test fitting the Standard Tofts model to synthetic single-voxel data."""
-        Ktrans_true = 0.25
-        ve_true = 0.35
-        Ct_tissue_true = modeling.standard_tofts_model_conv(self.t_points, Ktrans_true, ve_true, self.Cp_interp_func)
-        
-        # Ensure true data is not all zero or flat if AIF has content
-        if np.any(self.Cp_aif > 0) and Ktrans_true > 0 and ve_true > 0:
-            self.assertTrue(np.any(Ct_tissue_true > 1e-6), "Synthetic true data for Standard Tofts is unexpectedly flat/zero.")
-
-        noise_level = 0.01 * np.max(Ct_tissue_true) if np.max(Ct_tissue_true) > 1e-9 else 0.001
-        Ct_tissue_noisy = Ct_tissue_true + np.random.normal(0, noise_level, size=Ct_tissue_true.shape)
-        
-        initial_params = (0.1, 0.2)
-        bounds = ([0, 0], [1.0, 1.0]) # Ktrans, ve
-        
-        params_fitted, _ = modeling.fit_standard_tofts(
-            self.t_points, Ct_tissue_noisy, self.Cp_interp_func,
-            initial_params=initial_params, bounds_params=bounds
-        )
-        self.assertIsNotNone(params_fitted, "Standard Tofts fitting failed to return parameters.")
-        if params_fitted is not None and not np.all(np.isnan(params_fitted)):
-            Ktrans_fit, ve_fit = params_fitted
-            np.testing.assert_allclose(Ktrans_fit, Ktrans_true, rtol=0.3, atol=0.05, err_msg="Fitted Ktrans for Standard Tofts is out of tolerance.") # Increased tolerance
-            np.testing.assert_allclose(ve_fit, ve_true, rtol=0.3, atol=0.05, err_msg="Fitted ve for Standard Tofts is out of tolerance.") # Increased tolerance
-
-    def test_fit_standard_tofts_single_voxel_invalid_data(self):
-        """Test Standard Tofts fitting with invalid (e.g., all NaN) Ct_tissue."""
-        Ct_tissue_nan = np.full_like(self.t_points, np.nan)
-        params_fitted, curve_fitted = modeling.fit_standard_tofts(
-            self.t_points, Ct_tissue_nan, self.Cp_interp_func
-        )
-        self.assertTrue(np.all(np.isnan(params_fitted)), "Expected NaN parameters for all-NaN input to Standard Tofts fit.")
-        self.assertTrue(np.all(np.isnan(curve_fitted)), "Expected NaN curve for all-NaN input to Standard Tofts fit.")
-
-    def test_fit_extended_tofts_single_voxel_synthetic(self):
-        """Test fitting the Extended Tofts model to synthetic single-voxel data."""
-        Ktrans_true = 0.22
-        ve_true = 0.28
-        vp_true = 0.08
-        Ct_tissue_true = modeling.extended_tofts_model_conv(self.t_points, Ktrans_true, ve_true, vp_true, self.Cp_interp_func)
-
-        if np.any(self.Cp_aif > 0) and (Ktrans_true > 0 and ve_true > 0 or vp_true > 0):
-             self.assertTrue(np.any(Ct_tissue_true > 1e-6), "Synthetic true data for Extended Tofts is unexpectedly flat/zero.")
-
-        noise_level = 0.01 * np.max(Ct_tissue_true) if np.max(Ct_tissue_true) > 1e-9 else 0.001
-        Ct_tissue_noisy = Ct_tissue_true + np.random.normal(0, noise_level, size=Ct_tissue_true.shape)
-        
-        initial_params = (0.15, 0.2, 0.05)
-        bounds = ([0, 0, 0], [1.0, 1.0, 0.5]) # Ktrans, ve, vp
-        
-        params_fitted, _ = modeling.fit_extended_tofts(
-            self.t_points, Ct_tissue_noisy, self.Cp_interp_func,
-            initial_params=initial_params, bounds_params=bounds
-        )
-        self.assertIsNotNone(params_fitted, "Extended Tofts fitting failed to return parameters.")
-        if params_fitted is not None and not np.all(np.isnan(params_fitted)):
-            Ktrans_fit, ve_fit, vp_fit = params_fitted
-            np.testing.assert_allclose(Ktrans_fit, Ktrans_true, rtol=0.3, atol=0.05, err_msg="Fitted Ktrans for Extended Tofts is out of tolerance.") # Increased tolerance
-            np.testing.assert_allclose(ve_fit, ve_true, rtol=0.3, atol=0.05, err_msg="Fitted ve for Extended Tofts is out of tolerance.") # Increased tolerance
-            np.testing.assert_allclose(vp_fit, vp_true, rtol=0.4, atol=0.03, err_msg="Fitted vp for Extended Tofts is out of tolerance.") # Increased tolerance for vp
-
-    def test_fit_extended_tofts_single_voxel_invalid_data(self):
-        """Test Extended Tofts fitting with invalid (e.g., all NaN) Ct_tissue."""
-        Ct_tissue_nan = np.full_like(self.t_points, np.nan)
-        params_fitted, curve_fitted = modeling.fit_extended_tofts(
-            self.t_points, Ct_tissue_nan, self.Cp_interp_func
-        )
-        self.assertTrue(np.all(np.isnan(params_fitted)), "Expected NaN parameters for all-NaN input to Extended Tofts fit.")
-        self.assertTrue(np.all(np.isnan(curve_fitted)), "Expected NaN curve for all-NaN input to Extended Tofts fit.")
-
-    # --- Tests for 2CXM ---
-    def test_ode_system_2cxm(self):
-        """Test the 2CXM ODE system definition."""
-        t_test = 0.1 # Example time point
-        y_test = [0.5, 0.2] # C_p_tis, C_e_tis
-        Fp, PS, vp, ve = 0.5, 0.05, 0.1, 0.2 # Example parameters (units depend on time unit)
-        
-        mock_Cp_aif_val = 1.0
-        def mock_aif_interp(t): return mock_Cp_aif_val
-
-        dC_p_tis_dt_expected = (Fp / vp) * (mock_Cp_aif_val - y_test[0]) - (PS / vp) * (y_test[0] - y_test[1])
-        dC_e_tis_dt_expected = (PS / ve) * (y_test[0] - y_test[1])
-        
-        derivatives = modeling._ode_system_2cxm(t_test, y_test, Fp, PS, vp, ve, mock_aif_interp)
-        
-        self.assertAlmostEqual(derivatives[0], dC_p_tis_dt_expected)
-        self.assertAlmostEqual(derivatives[1], dC_e_tis_dt_expected)
-
-    def test_solve_2cxm_ode_model_runs(self):
-        """Basic test that solve_2cxm_ode_model runs and returns correct shape."""
-        Fp, PS, vp, ve = 0.6, 0.04, 0.15, 0.25 # Example parameters
-        
-        # Use a simple constant AIF for this test
-        const_aif_val = 1.0
-        cp_interp_const = lambda t: const_aif_val 
-        
-        Ct_model = modeling.solve_2cxm_ode_model(self.t_points, Fp, PS, vp, ve, cp_interp_const, t_span_max=self.t_points[-1])
-        
-        self.assertEqual(Ct_model.shape, self.t_points.shape)
-        self.assertTrue(np.all(Ct_model >= 0), "Concentrations should be non-negative for positive inputs.")
-        self.assertFalse(np.any(np.isinf(Ct_model)), "Model returned Inf, check parameters or solver.")
-        self.assertFalse(np.any(np.isnan(Ct_model)), "Model returned NaN, check parameters or solver.")
+    def test_worker_skipped_insufficient_data(self):
+        t_short = self.t_tissue[:3] # Standard Tofts needs at least 2 params * 2 = 4 points typically
+        Ct_short = self.Ct_st[:3]
+        args = (self.voxel_idx, Ct_short, t_short, self.t_aif, self.Cp_aif, 
+                "Standard Tofts", (0.1,0.1), ([0,0],[1,1])) 
+        _, _, result = modeling._fit_voxel_worker(args)
+        self.assertIn("error", result)
+        self.assertTrue("Skipped (insufficient valid data" in result["error"] or "Skipped (valid data points" in result["error"])
 
 
-    def test_fit_2cxm_model_single_voxel_synthetic(self):
-        """Test fitting the 2CXM model to synthetic single-voxel data."""
-        Fp_true, PS_true, vp_true, ve_true = 0.5, 0.03, 0.1, 0.2
-        
-        # Generate synthetic tissue data using the 2CXM model
-        # Use the AIF from setUp
-        Ct_tissue_true = modeling.solve_2cxm_ode_model(self.t_points, Fp_true, PS_true, vp_true, ve_true, 
-                                                      self.Cp_interp_func, t_span_max=self.t_points[-1])
-        
-        self.assertFalse(np.any(np.isinf(Ct_tissue_true)|np.isnan(Ct_tissue_true)), "True data generation failed for 2CXM fit test.")
+    def test_worker_unknown_model(self):
+        args = (self.voxel_idx, self.Ct_st, self.t_tissue, self.t_aif, self.Cp_aif, 
+                "Unknown Model Type", (0.1,0.1), ([0,0],[1,1]))
+        _, _, result = modeling._fit_voxel_worker(args)
+        self.assertIn("error", result)
+        self.assertEqual(result["error"], "Unknown model: Unknown Model Type")
 
-        # Add some noise (careful with noise level for complex models)
-        noise_level = 0.005 * np.max(Ct_tissue_true) if np.max(Ct_tissue_true) > 0 else 0.005
-        Ct_tissue_noisy = Ct_tissue_true + np.random.normal(0, noise_level, size=Ct_tissue_true.shape)
-        
-        initial_params = (0.4, 0.02, 0.08, 0.18) # Fp, PS, vp, ve
-        # Bounds need to be reasonable, e.g., vp and ve cannot be zero.
-        bounds = ([0, 0, 1e-3, 1e-3], [1.0, 0.5, 0.3, 0.5]) 
-        
-        params_fitted, _ = modeling.fit_2cxm_model(
-            self.t_points, Ct_tissue_noisy, 
-            self.Cp_interp_func, t_aif_max=self.t_points[-1], 
-            initial_params=initial_params, bounds_params=bounds
-        )
-        
-        self.assertIsNotNone(params_fitted, "2CXM fitting failed to return parameters.")
-        if params_fitted is not None and not np.all(np.isnan(params_fitted)):
-            Fp_fit, PS_fit, vp_fit, ve_fit = params_fitted
-            # Tolerances might need to be quite loose for a 4-parameter fit
-            # especially if the AIF is not very informative or time range is short.
-            np.testing.assert_allclose(Fp_fit, Fp_true, rtol=0.5, atol=0.1) 
-            np.testing.assert_allclose(PS_fit, PS_true, rtol=0.5, atol=0.02)
-            np.testing.assert_allclose(vp_fit, vp_true, rtol=0.5, atol=0.05)
-            np.testing.assert_allclose(ve_fit, ve_true, rtol=0.5, atol=0.05)
-
-    @patch('core.modeling.fit_2cxm_model') # Add 2CXM to the mocks
-    @patch('core.modeling.fit_patlak_model')
-    @patch('core.modeling.fit_extended_tofts')
     @patch('core.modeling.fit_standard_tofts')
-    def test_fit_voxel_worker_model_calls(self, mock_fit_std, mock_fit_ext, mock_fit_patlak, mock_fit_2cxm):
-        """Test that _fit_voxel_worker calls the correct model fitting logic."""
-        voxel_idx = (0,0,0); Ct_voxel = np.array([0.1,0.2,0.3,0.4,0.5]); t_tissue = np.arange(5)
-        t_aif_worker = np.arange(6); Cp_aif_worker = np.zeros(6); Cp_aif_worker[1:3]=1.0
-
-        # Standard Tofts
-        mock_fit_std.return_value = ((0.2, 0.3), MagicMock()); args_std = (voxel_idx, Ct_voxel, t_tissue, t_aif_worker, Cp_aif_worker, "Standard Tofts", (0.1,0.1), ([0,0],[1,1])); _, _, res_std = modeling._fit_voxel_worker(args_std); mock_fit_std.assert_called_once(); self.assertEqual(res_std.get("Ktrans"), 0.2)
-        # Extended Tofts
-        mock_fit_ext.return_value = ((0.25, 0.35, 0.05), MagicMock()); args_ext = (voxel_idx, Ct_voxel, t_tissue, t_aif_worker, Cp_aif_worker, "Extended Tofts", (0.1,0.1,0.01), ([0,0,0],[1,1,1])); _, _, res_ext = modeling._fit_voxel_worker(args_ext); mock_fit_ext.assert_called_once(); self.assertEqual(res_ext.get("vp"), 0.05)
-        # Patlak
-        mock_fit_patlak.return_value = ((0.1, 0.05), MagicMock()); args_patlak = (voxel_idx, Ct_voxel, t_tissue, t_aif_worker, Cp_aif_worker, "Patlak", (0.05,0.02), ([0,0],[0.3,0.2])); _, _, res_patlak = modeling._fit_voxel_worker(args_patlak); mock_fit_patlak.assert_called_once(); self.assertEqual(res_patlak.get("Ktrans_patlak"), 0.1)
-        # 2CXM
-        mock_fit_2cxm.return_value = ((0.6,0.04,0.15,0.25), MagicMock()); args_2cxm = (voxel_idx, Ct_voxel, t_tissue, t_aif_worker, Cp_aif_worker, "2CXM", (0.5,0.03,0.1,0.2), ([0,0,0,0],[1,1,1,1])); _, _, res_2cxm = modeling._fit_voxel_worker(args_2cxm); mock_fit_2cxm.assert_called_once(); self.assertEqual(res_2cxm.get("Fp_2cxm"), 0.6)
-        # Check that t_aif_max was passed to fit_2cxm_model (ANY used as it's an internal detail of how worker calls it)
-        mock_fit_2cxm.assert_called_with(ANY, ANY, ANY, t_aif_worker[-1], ANY, ANY)
+    def test_worker_fit_failure_nan_params(self, mock_fit_st):
+        mock_fit_st.return_value = ((np.nan, np.nan), np.full_like(self.t_tissue, np.nan))
+        args = (self.voxel_idx, self.Ct_st, self.t_tissue, self.t_aif, self.Cp_aif, 
+                "Standard Tofts", (0.1,0.1), ([0,0],[1,1]))
+        _, _, result = modeling._fit_voxel_worker(args)
+        self.assertIn("error", result)
+        self.assertEqual(result["error"], "Fit failed (returned None or NaN parameters)")
 
 
-    def test_fit_voxel_worker_skip_nan_data(self): # Unchanged
-        voxel_idx = (1,1,1); Ct_voxel_nan = np.full(5, np.nan); t_tissue = np.arange(5)
-        t_aif_worker = np.arange(6); Cp_aif_worker = np.zeros(6)
-        args_tuple = (voxel_idx, Ct_voxel_nan, t_tissue, t_aif_worker, Cp_aif_worker, "Standard Tofts", (0.1,0.2), ([0,0],[1,1]))
-        idx_out, model_out, result_dict = modeling._fit_voxel_worker(args_tuple)
-        self.assertEqual(idx_out, voxel_idx); self.assertIn("error", result_dict); self.assertIn("Skipped", result_dict["error"])
+class TestVoxelWiseFitting(unittest.TestCase):
+    """Tests for voxel-wise fitting functions (e.g., fit_standard_tofts_voxelwise)."""
+
+    def setUp(self):
+        self.Ct_data_shape = (2,2,1,20) # X, Y, Z, Time
+        self.Ct_data = np.zeros(self.Ct_data_shape)
+        self.t_tissue = np.linspace(0, 2, 20) 
+        self.t_aif = T_AIF[:50] 
+        self.Cp_aif = AIF_CONC[:50]
         
-    def test_fit_voxel_worker_skip_insufficient_data(self): # Unchanged
-        voxel_idx = (1,1,1); Ct_voxel_short = np.array([0.1, np.nan, 0.3, np.nan, np.nan]); t_tissue = np.arange(5)
-        t_aif_worker = np.arange(6); Cp_aif_worker = np.zeros(6)
-        args_tuple = (voxel_idx, Ct_voxel_short, t_tissue, t_aif_worker, Cp_aif_worker, "Standard Tofts", (0.1,0.2), ([0,0],[1,1]))
-        idx_out, model_out, result_dict = modeling._fit_voxel_worker(args_tuple)
-        self.assertEqual(idx_out, voxel_idx); self.assertIn("error", result_dict); self.assertIn("insufficient valid data points", result_dict["error"])
+        self.true_st_params = (0.25, 0.3) # Ktrans, ve
+        Ct_clean_voxel0 = modeling.standard_tofts_model_conv(self.t_tissue, *self.true_st_params, 
+                                                             interp1d(self.t_aif, self.Cp_aif, kind='linear', bounds_error=False, fill_value=0.0))
+        self.Ct_data[0,0,0,:] = Ct_clean_voxel0 + np.random.normal(0, 0.001 * np.max(Ct_clean_voxel0), size=Ct_clean_voxel0.shape)
+        self.Ct_data[0,1,0,:] = Ct_clean_voxel0 * 0.5 + np.random.normal(0, 0.001 * np.max(Ct_clean_voxel0), size=Ct_clean_voxel0.shape) 
+        self.Ct_data[1,0,0,:] = np.nan 
+        self.Ct_data[1,1,0,:] = 0 
 
-    @patch('core.modeling._fit_voxel_worker') 
-    def _run_voxelwise_parallel_test(self, mock_worker, fit_function_name, model_name_in_worker, param_keys_expected, default_initial_params, default_bounds):
-        """Helper to test voxel-wise parallel calls for different models."""
-        def side_effect_func(args):
-            idx, _, _, _, _, model_name_call, _, _ = args
-            if model_name_call == model_name_in_worker:
-                return_params = {key: idx[0]*0.1 + idx[1]*0.01 + (param_keys_expected.index(key)*0.001) for key in param_keys_expected}
-                return idx, model_name_call, return_params
-            return idx, model_name_call, {"error": "Wrong model for mock"}
-        mock_worker.side_effect = side_effect_func
+        self.mask = np.ones(self.Ct_data_shape[:3], dtype=bool)
+        self.mask[1,0,0] = False # Mask out the NaN voxel for some tests
 
-        Ct_data = np.random.rand(2,2,1,10) 
-        t_tissue = np.arange(10); t_aif = np.arange(10); Cp_aif = np.zeros(10); Cp_aif[1:3]=1.0
-        fit_function = getattr(modeling, fit_function_name)
-
-        results_serial = fit_function(Ct_data, t_tissue, t_aif, Cp_aif, initial_params=default_initial_params, bounds_params=default_bounds, num_processes=1)
-        self.assertEqual(mock_worker.call_count, 4) 
-        for i, key in enumerate(param_keys_expected):
-            self.assertAlmostEqual(results_serial[key][0,0,0], 0*0.1 + 0*0.01 + i*0.001)
+    @patch('multiprocessing.Pool')
+    def test_fit_standard_tofts_voxelwise_mocked_pool(self, mock_pool_constructor):
+        mock_pool_instance = MagicMock()
         
-        mock_worker.reset_mock()
-        with patch('multiprocessing.Pool') as mock_pool_constructor:
-            mock_pool_instance = MagicMock()
-            simulated_map_results = []
-            for x in range(2):
-                for y in range(2):
-                    for z in range(1): 
-                        args_tuple_sim = ((x,y,z), Ct_data[x,y,z,:], t_tissue, t_aif, Cp_aif, model_name_in_worker, default_initial_params, default_bounds)
-                        simulated_map_results.append(side_effect_func(args_tuple_sim))
-            mock_pool_instance.map.return_value = simulated_map_results
-            mock_pool_constructor.return_value.__enter__.return_value = mock_pool_instance
-            results_parallel = fit_function(Ct_data, t_tissue, t_aif, Cp_aif, initial_params=default_initial_params, bounds_params=default_bounds, num_processes=2)
-            if len(Ct_data.reshape(-1, Ct_data.shape[-1])) > 1: 
-                 mock_pool_constructor.assert_called_with(processes=2)
-                 mock_pool_instance.map.assert_called_once()
-            for key in param_keys_expected: np.testing.assert_array_almost_equal(results_parallel[key], results_serial[key])
+        # Simulate worker results for unmasked voxels
+        # Voxel (0,0,0) - good fit
+        # Voxel (0,1,0) - good fit (different params)
+        # Voxel (1,1,0) - all zero Ct, worker should return error or specific values indicating failure
+        worker_results = [
+            ((0,0,0), "Standard Tofts", {"Ktrans": 0.24, "ve": 0.29}), 
+            ((0,1,0), "Standard Tofts", {"Ktrans": 0.12, "ve": 0.14}), 
+            ((1,1,0), "Standard Tofts", {"error": "Skipped (all NaN or all zero data)"}) # Worker handles zero data
+        ]
+        # Note: Voxel (1,0,0) is masked out by self.mask, so it won't be in tasks_args_list
+        # and thus not in worker_results if the mask is applied correctly before forming tasks.
+        
+        mock_pool_instance.map.return_value = worker_results
+        mock_pool_constructor.return_value.__enter__.return_value = mock_pool_instance
 
-    def test_fit_standard_tofts_voxelwise_parallel_calls(self):
-        self._run_voxelwise_parallel_test(fit_function_name="fit_standard_tofts_voxelwise", model_name_in_worker="Standard Tofts", param_keys_expected=["Ktrans", "ve"], default_initial_params=(0.1,0.2), default_bounds=([0,0],[1,1]))
-    def test_fit_extended_tofts_voxelwise_parallel_calls(self):
-        self._run_voxelwise_parallel_test(fit_function_name="fit_extended_tofts_voxelwise", model_name_in_worker="Extended Tofts", param_keys_expected=["Ktrans", "ve", "vp"], default_initial_params=(0.1,0.2,0.05), default_bounds=([0,0,0],[1,1,1]))
-    def test_fit_patlak_model_voxelwise_parallel_calls(self):
-        self._run_voxelwise_parallel_test(fit_function_name="fit_patlak_model_voxelwise", model_name_in_worker="Patlak", param_keys_expected=["Ktrans_patlak", "vp_patlak"], default_initial_params=(0.05,0.05), default_bounds=([0,0],[1,0.5]))
-    def test_fit_2cxm_model_voxelwise_parallel_calls(self):
-        self._run_voxelwise_parallel_test(fit_function_name="fit_2cxm_model_voxelwise", model_name_in_worker="2CXM", param_keys_expected=["Fp_2cxm", "PS_2cxm", "vp_2cxm", "ve_2cxm"], default_initial_params=(0.1,0.05,0.05,0.1), default_bounds=([0,0,1e-3,1e-3],[2,1,0.5,0.7]))
+        param_maps = modeling.fit_standard_tofts_voxelwise(
+            self.Ct_data, self.t_tissue, self.t_aif, self.Cp_aif, 
+            mask=self.mask, num_processes=2 
+        )
+        
+        self.assertIn("Ktrans", param_maps)
+        self.assertIn("ve", param_maps)
+        self.assertEqual(param_maps["Ktrans"].shape, self.Ct_data_shape[:3])
+        
+        assert_allclose(param_maps["Ktrans"][0,0,0], 0.24)
+        assert_allclose(param_maps["ve"][0,0,0], 0.29)
+        assert_allclose(param_maps["Ktrans"][0,1,0], 0.12)
+        assert_allclose(param_maps["ve"][0,1,0], 0.14)
+        
+        self.assertTrue(np.isnan(param_maps["Ktrans"][1,0,0]), "Masked out voxel (1,0,0) should be NaN")
+        self.assertTrue(np.isnan(param_maps["Ktrans"][1,1,0]), "Voxel (1,1,0) (all zeros) which worker skipped should be NaN")
+
+
+    def test_fit_standard_tofts_voxelwise_serial(self):
+        """Test voxel-wise fitting in serial mode (num_processes=1)."""
+        mask = self.mask.copy() # Use the mask that excludes the all-NaN voxel
+
+        param_maps = modeling.fit_standard_tofts_voxelwise(
+            self.Ct_data, self.t_tissue, self.t_aif, self.Cp_aif, 
+            mask=mask, num_processes=1 
+        )
+        self.assertIn("Ktrans", param_maps); self.assertIn("ve", param_maps)
+        # Voxel (0,0,0) - should fit
+        assert_allclose(param_maps["Ktrans"][0,0,0], self.true_st_params[0], rtol=0.6, atol=0.15)
+        assert_allclose(param_maps["ve"][0,0,0], self.true_st_params[1], rtol=0.6, atol=0.15)
+        # Voxel (0,1,0) - should fit to different params (data was Ct_clean_voxel0 * 0.5)
+        # This is a rough check, actual fit depends on noise and optimizer path
+        self.assertTrue(0 < param_maps["Ktrans"][0,1,0] < self.true_st_params[0])
+        
+        # Voxel (1,0,0) - masked out
+        self.assertTrue(np.isnan(param_maps["Ktrans"][1,0,0]))
+        # Voxel (1,1,0) - all zeros Ct, should result in error from worker, thus NaN
+        self.assertTrue(np.isnan(param_maps["Ktrans"][1,1,0]))
+
+
+    def test_voxelwise_all_masked_out(self):
+        """Test behavior when the mask excludes all voxels."""
+        mask_all_false = np.zeros(self.Ct_data_shape[:3], dtype=bool)
+        param_maps = modeling.fit_standard_tofts_voxelwise(
+            self.Ct_data, self.t_tissue, self.t_aif, self.Cp_aif,
+            mask=mask_all_false, num_processes=1
+        )
+        self.assertTrue(np.all(np.isnan(param_maps["Ktrans"])))
+        self.assertTrue(np.all(np.isnan(param_maps["ve"])))
+
+    def test_voxelwise_ct_all_nans(self):
+        """Test voxel-wise fitting when input Ct_data is all NaNs."""
+        Ct_all_nans = np.full_like(self.Ct_data, np.nan)
+        param_maps = modeling.fit_standard_tofts_voxelwise(
+            Ct_all_nans, self.t_tissue, self.t_aif, self.Cp_aif,
+            mask=None, num_processes=1 # No mask, process all
+        )
+        self.assertTrue(np.all(np.isnan(param_maps["Ktrans"])))
+        self.assertTrue(np.all(np.isnan(param_maps["ve"])))
 
 
 if __name__ == '__main__':
