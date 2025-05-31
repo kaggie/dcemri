@@ -2,7 +2,7 @@ import numpy as np
 import csv
 import os
 import json
-from ..core import conversion
+from core import conversion
 
 """
 This module provides functions for Arterial Input Function (AIF) generation,
@@ -341,12 +341,14 @@ def generate_population_aif(name: str, time_points: np.ndarray, params: dict = N
             else:
                 return model_function(time_points)
         except TypeError as e:
-            # More specific error for parameter issues
-            raise ValueError(f"Error calling AIF model '{name}' with provided parameters: {e}")
+            # More specific error for parameter issues (e.g. wrong arg name)
+            raise ValueError(f"Error calling AIF model '{name}' due to incorrect parameters: {e}")
+        except ValueError: # Let ValueErrors from model functions (e.g. negative params) propagate
+            raise
         except Exception as e:
             # Catch other unexpected errors during AIF generation
-            print(f"Unexpected error generating population AIF '{name}': {e}")
-            return None
+            print(f"An unexpected error occurred while generating population AIF '{name}': {e}")
+            return None # Or re-raise a custom exception
     else:
         # Model name not found
         return None
@@ -430,10 +432,10 @@ def extract_aif_from_roi(
     # Convert signal time course to concentration time course
     aif_conc_tc = conversion.signal_tc_to_concentration_tc(
         signal_tc=mean_roi_signal_tc,
-        T10=t10_blood,
-        r1=r1_blood,
+        t10_scalar=t10_blood, # Corrected parameter name from T10 to t10_scalar
+        r1_relaxivity=r1_blood, # Corrected parameter name from r1 to r1_relaxivity
         TR=TR,
-        n_baseline_points=baseline_time_points_aif
+        baseline_time_points=baseline_time_points_aif
     )
 
     # Generate time axis for the AIF

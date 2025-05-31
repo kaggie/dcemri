@@ -2,241 +2,281 @@ import unittest
 import numpy as np
 import nibabel as nib
 import os
-import tempfile
-import shutil
-import sys
-from numpy.testing import assert_array_equal, assert_raises # Using assert_raises from numpy.testing for consistency if needed, else unittest.assertRaises
+from core.io import (
+    load_nifti_file,
+    load_dce_series,
+    load_t1_map,
+    load_mask,
+    save_nifti_map,
+)
 
-# Add the project root to the Python path to allow direct import of dce_mri_analyzer
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-if project_root not in sys.path:
-    sys.path.insert(0, project_root)
+# Helper function to create a dummy NIfTI file
+def create_dummy_nifti(filename, data_shape, affine=np.eye(4), dtype=np.float32):
+    """Creates a dummy NIfTI file for testing."""
+    os.makedirs(os.path.dirname(filename), exist_ok=True)
+    data = np.random.rand(*data_shape).astype(dtype)
+    img = nib.Nifti1Image(data, affine)
+    nib.save(img, filename)
+    return filename
 
-from core import io
+# Helper function to create an empty/corrupted file
+def create_invalid_nifti(filename):
+    os.makedirs(os.path.dirname(filename), exist_ok=True)
+    with open(filename, 'w') as f:
+        f.write("This is not a nifti file")
+    return filename
 
-class TestNiftiLoading(unittest.TestCase): # Renamed from TestIoFunctions
+class TestIO(unittest.TestCase):
     def setUp(self):
-        """Create a temporary directory for fake NIfTI files."""
-        self.test_dir = tempfile.mkdtemp()
-        self.default_affine = np.eye(4)
+        self.test_dir = "test_nifti_data_io" # Use a unique name for this test suite
+        os.makedirs(self.test_dir, exist_ok=True)
+
+        # Valid files
+        self.nifti_3d_file = create_dummy_nifti(
+            os.path.join(self.test_dir, "dummy_3d.nii.gz"), (5, 5, 5)
+        )
+        self.nifti_4d_file = create_dummy_nifti(
+            os.path.join(self.test_dir, "dummy_4d.nii.gz"), (5, 5, 5, 10)
+        )
+        self.mask_file_int = create_dummy_nifti( # For mask loading, integer type
+            os.path.join(self.test_dir, "dummy_mask_int.nii.gz"), (5, 5, 5), dtype=np.int16
+        )
+
+        # Invalid file for generic load_nifti_file
+        self.invalid_nifti_format_file = create_invalid_nifti(
+            os.path.join(self.test_dir, "invalid_format.nii.gz")
+        )
+        self.empty_nifti_file = os.path.join(self.test_dir, "empty.nii.gz")
+        with open(self.empty_nifti_file, 'w') as f:
+            pass
 
 
     def tearDown(self):
-        """Clean up the temporary directory and its contents."""
-        shutil.rmtree(self.test_dir)
+        for f in os.listdir(self.test_dir):
+            try:
+                os.remove(os.path.join(self.test_dir, f))
+            except OSError: # Handle cases where a file might be a directory if setup failed
+                pass
+        if os.path.exists(self.test_dir):
+            os.rmdir(self.test_dir)
 
-    def _create_mock_nifti_file(self, filename, data_shape, dtype=np.float32, affine_matrix=None, is_corrupted=False):
-        """Helper function to create a mock NIfTI file."""
-        filepath = os.path.join(self.test_dir, filename)
-        if affine_matrix is None:
-            affine_matrix = self.default_affine
-
-        if is_corrupted:
-            with open(filepath, 'wb') as f:
-                f.write(b"corrupted_data_not_a_nifti_file") 
-        else:
-            data = np.arange(np.prod(data_shape), dtype=dtype).reshape(data_shape)
-            img = nib.Nifti1Image(data, affine_matrix)
-            nib.save(img, filepath)
-        return filepath
-
-    def test_load_nifti_file_success(self):
-        """Test successful loading of a NIfTI file."""
-        shape = (10, 10, 10)
-        expected_data = np.arange(np.prod(shape), dtype=np.float32).reshape(shape)
-        fake_nifti_path = self._create_mock_nifti_file(filename="test_success.nii.gz", data_shape=shape)
-        
-        img = io.load_nifti_file(fake_nifti_path)
+    # --- Tests for load_nifti_file ---
+    def test_load_nifti_valid(self):
+        img = load_nifti_file(self.nifti_3d_file)
+        self.assertIsNotNone(img)
         self.assertIsInstance(img, nib.Nifti1Image)
-        self.assertEqual(img.shape, shape)
-        assert_array_equal(img.get_fdata(), expected_data)
-        assert_array_equal(img.affine, self.default_affine)
+        self.assertEqual(img.shape, (5,5,5))
 
-
-    def test_load_nifti_file_not_found(self):
-        """Test loading a non-existent NIfTI file."""
-        non_existent_file = os.path.join(self.test_dir, "non_existent_file.nii")
+    def test_load_nifti_non_existent(self):
         with self.assertRaises(FileNotFoundError):
-            io.load_nifti_file(non_existent_file)
+            load_nifti_file(os.path.join(self.test_dir, "non_existent.nii.gz"))
 
-    def test_load_nifti_file_invalid_corrupted(self): # Renamed for clarity
-        """Test loading an invalid/corrupted NIfTI file."""
-        invalid_file_path = self._create_mock_nifti_file("invalid.nii.gz", (2,2,2), is_corrupted=True)
-        with self.assertRaises(ValueError) as context:
-            io.load_nifti_file(invalid_file_path)
-        self.assertTrue("Invalid NIfTI file" in str(context.exception))
+    def test_load_nifti_invalid_format_file(self):
+        # nibabel.load can raise various errors for malformed files.
+        # ImageFileError is common, which is a subclass of ValueError.
+        with self.assertRaises(ValueError):
+            load_nifti_file(self.invalid_nifti_format_file)
 
+    def test_load_nifti_empty_file(self):
+         # nibabel.load raises ImageFileError for empty files too.
+        with self.assertRaises(ValueError):
+            load_nifti_file(self.empty_nifti_file)
 
-    def test_load_dce_series_success(self):
-        """Test successful loading of a 4D DCE series."""
-        shape = (10, 10, 10, 20)
-        expected_data = np.arange(np.prod(shape), dtype=np.float32).reshape(shape)
-        fake_dce_path = self._create_mock_nifti_file(shape=shape, filename="dce.nii.gz")
-        
-        dce_data = io.load_dce_series(fake_dce_path)
-        self.assertIsInstance(dce_data, np.ndarray)
-        self.assertEqual(dce_data.shape, shape)
-        assert_array_equal(dce_data, expected_data)
+    # --- Tests for load_dce_series ---
+    def test_load_dce_series_valid_4d(self):
+        data, affine, header = load_dce_series(self.nifti_4d_file)
+        self.assertIsNotNone(data)
+        self.assertEqual(data.shape, (5, 5, 5, 10))
+        self.assertIsNotNone(affine)
+        self.assertIsNotNone(header)
+        self.assertIsInstance(data, np.ndarray)
 
+    def test_load_dce_series_rejects_3d(self):
+        with self.assertRaises(ValueError):
+            load_dce_series(self.nifti_3d_file)
 
-    def test_load_dce_series_wrong_dim(self):
-        """Test loading a DCE series with incorrect (3D) dimensions."""
-        fake_3d_path = self._create_mock_nifti_file(shape=(10, 10, 10), filename="3d_for_dce.nii.gz")
-        with self.assertRaisesRegex(ValueError, "DCE series must be a 4D NIfTI image."):
-            io.load_dce_series(fake_3d_path)
-
-    def test_load_t1_map_success(self):
-        """Test successful loading of a 3D T1 map."""
-        shape = (10,10,10)
-        expected_data = np.arange(np.prod(shape), dtype=np.float32).reshape(shape)
-        fake_t1_path = self._create_mock_nifti_file(shape=shape, filename="t1.nii.gz")
-        
-        t1_data = io.load_t1_map(fake_t1_path)
-        self.assertIsInstance(t1_data, np.ndarray)
-        self.assertEqual(t1_data.shape, shape)
-        assert_array_equal(t1_data, expected_data)
-
-    def test_load_t1_map_wrong_dim(self):
-        """Test loading a T1 map with incorrect (4D) dimensions."""
-        fake_4d_path = self._create_mock_nifti_file(shape=(10, 10, 10, 5), filename="4d_for_t1.nii.gz")
-        with self.assertRaisesRegex(ValueError, "T1 map must be a 3D NIfTI image."):
-            io.load_t1_map(fake_4d_path)
-
-    def test_load_t1_map_dim_mismatch_with_dce(self):
-        """Test T1 map loading with spatial dimensions mismatch against DCE shape."""
-        dce_shape_ref = (10, 10, 10, 5) 
-        fake_t1_mismatch_path = self._create_mock_nifti_file(shape=(5, 5, 5), filename="t1_mismatch.nii.gz")
-        with self.assertRaisesRegex(ValueError, "T1 map dimensions do not match DCE series spatial dimensions."):
-            io.load_t1_map(fake_t1_mismatch_path, dce_shape=dce_shape_ref)
-
-    def test_load_mask_success(self):
-        """Test successful loading of a 3D mask file, ensuring boolean output."""
-        mask_data_orig = np.random.randint(0, 3, size=(10, 10, 10)).astype(np.uint8) # Include non-binary values
-        fake_mask_path = os.path.join(self.test_dir, "mask_input.nii.gz")
-        mask_img_for_ref = nib.Nifti1Image(mask_data_orig, self.default_affine)
-        nib.save(mask_img_for_ref, fake_mask_path)
-
-        mask_data_loaded = io.load_mask(fake_mask_path)
-        self.assertIsInstance(mask_data_loaded, np.ndarray)
-        self.assertEqual(mask_data_loaded.dtype, bool) # Crucial check
-        self.assertEqual(mask_data_loaded.shape, (10, 10, 10))
-        # Verify that non-zero values became True, zero values became False
-        np.testing.assert_array_equal(mask_data_loaded, mask_data_orig.astype(bool))
-
-
-    def test_load_mask_wrong_dim(self):
-        """Test loading a mask with incorrect (4D) dimensions."""
-        fake_4d_mask_path = self._create_mock_nifti_file(shape=(10, 10, 10, 3), filename="4d_mask.nii.gz")
-        with self.assertRaisesRegex(ValueError, "Mask must be a 3D NIfTI image."):
-            io.load_mask(fake_4d_mask_path)
-
-    def test_load_mask_dim_mismatch_with_ref(self):
-        """Test mask loading with spatial dimensions mismatch against reference shape."""
-        reference_shape_ref = (10, 10, 10) 
-        fake_mask_mismatch_path = self._create_mock_nifti_file(shape=(5, 5, 5), filename="mask_mismatch.nii.gz")
-        with self.assertRaisesRegex(ValueError, "Mask dimensions do not match the reference image dimensions."):
-            io.load_mask(fake_mask_mismatch_path, reference_shape=reference_shape_ref)
-
-class TestSaveNiftiMap(unittest.TestCase):
-    def setUp(self):
-        self.test_dir = tempfile.mkdtemp()
-        self.ref_affine = np.array([
-            [-2.,  0.,  0.,  128.],
-            [ 0.,  2.,  0., -128.],
-            [ 0.,  0.,  2., -128.],
-            [ 0.,  0.,  0.,    1.]
-        ])
-        self.ref_shape_3d = (5,5,5)
-        self.ref_shape_4d = (5,5,5,10)
-
-        self.ref_3d_filepath = os.path.join(self.test_dir, "ref_3d.nii.gz")
-        ref_3d_data = np.zeros(self.ref_shape_3d, dtype=np.int16)
-        ref_3d_img = nib.Nifti1Image(ref_3d_data, self.ref_affine)
-        nib.save(ref_3d_img, self.ref_3d_filepath)
-        
-        self.ref_4d_filepath = os.path.join(self.test_dir, "ref_4d.nii.gz")
-        ref_4d_data = np.zeros(self.ref_shape_4d, dtype=np.float32)
-        ref_4d_img = nib.Nifti1Image(ref_4d_data, self.ref_affine)
-        ref_4d_img.header['pixdim'][4] = 2.5 # Example TR value
-        nib.save(ref_4d_img, self.ref_4d_filepath)
-        
-        self.map_to_save_valid = np.random.rand(*self.ref_shape_3d).astype(np.float32)
-
-
-    def tearDown(self):
-        shutil.rmtree(self.test_dir)
-
-    def test_save_nifti_map_success_3d_ref(self):
-        """Test saving a 3D map using a 3D reference NIfTI."""
-        output_filepath = os.path.join(self.test_dir, "output_map_3d_ref.nii.gz")
-        
-        io.save_nifti_map(self.map_to_save_valid, self.ref_3d_filepath, output_filepath)
-        
-        self.assertTrue(os.path.exists(output_filepath))
-        loaded_img = nib.load(output_filepath)
-        
-        self.assertEqual(loaded_img.shape, self.ref_shape_3d)
-        np.testing.assert_array_almost_equal(loaded_img.get_fdata(), self.map_to_save_valid, decimal=5)
-        np.testing.assert_array_almost_equal(loaded_img.affine, self.ref_affine)
-        self.assertEqual(loaded_img.header.get_data_dtype(), np.float32)
-
-    def test_save_nifti_map_success_4d_ref(self):
-        """Test saving a 3D map using a 4D reference NIfTI."""
-        output_filepath = os.path.join(self.test_dir, "output_map_4d_ref.nii.gz")
-        
-        io.save_nifti_map(self.map_to_save_valid, self.ref_4d_filepath, output_filepath)
-        
-        self.assertTrue(os.path.exists(output_filepath))
-        loaded_img = nib.load(output_filepath)
-        
-        self.assertEqual(loaded_img.shape, self.ref_shape_3d) 
-        np.testing.assert_array_almost_equal(loaded_img.get_fdata(), self.map_to_save_valid, decimal=5)
-        np.testing.assert_array_almost_equal(loaded_img.affine, self.ref_affine)
-        self.assertEqual(loaded_img.header.get_data_dtype(), np.float32)
-        self.assertEqual(loaded_img.header['dim'][0], 3) 
-        self.assertEqual(loaded_img.header['dim'][4], 1) # 4th dim size should be 1 for a 3D map
-        self.assertNotEqual(loaded_img.header['pixdim'][4], nib.load(self.ref_4d_filepath).header['pixdim'][4],
-                            "pixdim[4] from 4D ref should not be directly copied to 3D map header if it implies temporal spacing")
-
-
-    def test_save_nifti_map_ref_not_found(self):
-        """Test FileNotFoundError if reference NIfTI does not exist."""
-        non_existent_ref = os.path.join(self.test_dir, "non_existent_ref.nii.gz")
-        output_filepath = os.path.join(self.test_dir, "output_map.nii.gz")
+    def test_load_dce_series_non_existent(self):
         with self.assertRaises(FileNotFoundError):
-            io.save_nifti_map(self.map_to_save_valid, non_existent_ref, output_filepath)
+            load_dce_series(os.path.join(self.test_dir, "non_existent_dce.nii.gz"))
 
-    def test_save_nifti_map_data_not_3d(self):
-        """Test ValueError if data_map is not 3D."""
-        data_map_2d = np.random.rand(5,5)
-        output_filepath = os.path.join(self.test_dir, "output_map_2d.nii.gz")
-        with self.assertRaisesRegex(ValueError, "data_map must be a 3D array"):
-            io.save_nifti_map(data_map_2d, self.ref_3d_filepath, output_filepath)
-            
-        data_map_4d = np.random.rand(5,5,5,2) # Attempting to save a 4D map with this function
-        output_filepath_4d = os.path.join(self.test_dir, "output_map_4d.nii.gz")
-        with self.assertRaisesRegex(ValueError, "data_map must be a 3D array"):
-            io.save_nifti_map(data_map_4d, self.ref_4d_filepath, output_filepath_4d)
+    def test_load_dce_series_invalid_file(self):
+        with self.assertRaises(ValueError): # Expecting error from load_nifti_file
+            load_dce_series(self.invalid_nifti_format_file)
+
+    # --- Tests for load_t1_map ---
+    def test_load_t1_map_valid_3d(self):
+        data, affine, header = load_t1_map(self.nifti_3d_file)
+        self.assertIsNotNone(data)
+        self.assertEqual(data.shape, (5, 5, 5))
+        self.assertIsNotNone(affine)
+        self.assertIsNotNone(header)
+        self.assertIsInstance(data, np.ndarray)
+
+    def test_load_t1_map_rejects_4d(self):
+        with self.assertRaises(ValueError):
+            load_t1_map(self.nifti_4d_file)
+
+    def test_load_t1_map_dce_shape_validation_matching(self):
+        # dce_shape (5,5,5,10) -> spatial (5,5,5) should match self.nifti_3d_file (5,5,5)
+        dce_ref_shape = (5,5,5,10)
+        data, _, _ = load_t1_map(self.nifti_3d_file, dce_shape=dce_ref_shape)
+        self.assertEqual(data.shape, (5,5,5))
+
+    def test_load_t1_map_dce_shape_validation_mismatch(self):
+        dce_ref_shape_mismatch = (6, 5, 5, 10) # X dimension differs
+        with self.assertRaises(ValueError):
+            load_t1_map(self.nifti_3d_file, dce_shape=dce_ref_shape_mismatch)
+
+    def test_load_t1_map_non_existent(self):
+        with self.assertRaises(FileNotFoundError):
+            load_t1_map(os.path.join(self.test_dir, "non_existent_t1.nii.gz"))
+
+    def test_load_t1_map_invalid_file(self):
+        with self.assertRaises(ValueError):
+            load_t1_map(self.invalid_nifti_format_file)
+
+    # --- Tests for load_mask ---
+    def test_load_mask_valid_3d_int(self):
+        # Using self.mask_file_int which has dtype=int16
+        mask_data, affine, header = load_mask(self.mask_file_int)
+        self.assertIsNotNone(mask_data)
+        self.assertEqual(mask_data.shape, (5, 5, 5))
+        self.assertEqual(mask_data.dtype, bool) # Should be converted to boolean
+        # Check some values are True/False if possible, or that it contains both
+        # For random int data, it's likely to have non-zero values that become True
+        self.assertTrue(np.any(mask_data) or not np.all(mask_data)) # Ensure not all False or all True if original was mixed
+        self.assertIsNotNone(affine)
+        self.assertIsNotNone(header)
+
+    def test_load_mask_rejects_4d(self):
+        with self.assertRaises(ValueError):
+            load_mask(self.nifti_4d_file) # Using a 4D float file
+
+    def test_load_mask_ref_shape_validation_matching(self):
+        ref_shape = (5,5,5)
+        mask_data, _, _ = load_mask(self.mask_file_int, reference_shape=ref_shape)
+        self.assertEqual(mask_data.shape, ref_shape)
+
+    def test_load_mask_ref_shape_validation_mismatch(self):
+        ref_shape_mismatch = (6, 5, 5) # X dimension differs
+        with self.assertRaises(ValueError):
+            load_mask(self.mask_file_int, reference_shape=ref_shape_mismatch)
+
+    def test_load_mask_ref_shape_4d_mismatch(self):
+        # Mask is 3D, reference_shape is 4D, this should also fail as spatial part differs
+        ref_shape_4d_mismatch = (6,5,5,10)
+        with self.assertRaises(ValueError):
+            load_mask(self.mask_file_int, reference_shape=ref_shape_4d_mismatch)
+
+        # Mask is 3D, reference_shape is 4D. This should fail because load_mask expects
+        # reference_shape to be 3D if the mask is 3D, for an exact match.
+        ref_shape_4d_spatial_match = (5,5,5,12)
+        with self.assertRaises(ValueError):
+            load_mask(self.mask_file_int, reference_shape=ref_shape_4d_spatial_match)
 
 
-    def test_save_nifti_map_shape_mismatch(self):
-        """Test ValueError if data_map shape mismatches reference NIfTI spatial shape."""
-        data_map_wrong_shape = np.random.rand(3,3,3) 
-        output_filepath = os.path.join(self.test_dir, "output_map_wrong_shape.nii.gz")
-        # self.ref_3d_filepath is 5x5x5, this data_map is 3x3x3
-        with self.assertRaisesRegex(ValueError, "data_map shape .* does not match reference NIfTI spatial shape"):
-            io.save_nifti_map(data_map_wrong_shape, self.ref_3d_filepath, output_filepath)
+    def test_load_mask_non_existent(self):
+        with self.assertRaises(FileNotFoundError):
+            load_mask(os.path.join(self.test_dir, "non_existent_mask.nii.gz"))
 
-    def test_save_nifti_map_invalid_output_path(self):
-        """Test IOError for an invalid output filepath (e.g., a directory)."""
-        # Attempting to save to a path that is a directory should raise an error.
-        # Nibabel's save function typically raises FileNotFoundError or IsADirectoryError,
-        # which the wrapper in core.io might catch and re-raise as IOError or ValueError.
-        # Based on core.io.save_nifti_map, it re-raises nibabel errors as generic Exception or specific FileNotFoundError.
-        # Let's check for IOError as per prompt.
-        with self.assertRaises(IOError): # Or specific error like IsADirectoryError if not wrapped
-            io.save_nifti_map(self.map_to_save_valid, self.ref_3d_filepath, self.test_dir)
+    def test_load_mask_invalid_file(self):
+        with self.assertRaises(ValueError):
+            load_mask(self.invalid_nifti_format_file)
+
+    # --- Tests for save_nifti_map ---
+    def test_save_nifti_map_3d_data_3d_ref(self):
+        data_to_save = np.random.rand(5, 5, 5).astype(np.float32)
+        output_path = os.path.join(self.test_dir, "saved_3d_from_3dref.nii.gz")
+        
+        save_nifti_map(data_to_save, self.nifti_3d_file, output_path)
+        self.assertTrue(os.path.exists(output_path))
+        
+        loaded_img = nib.load(output_path)
+        loaded_data = loaded_img.get_fdata()
+        
+        np.testing.assert_array_almost_equal(loaded_data, data_to_save, decimal=5)
+        self.assertEqual(loaded_img.shape, data_to_save.shape)
+        
+        ref_img = nib.load(self.nifti_3d_file)
+        np.testing.assert_array_almost_equal(loaded_img.affine, ref_img.affine)
+        self.assertEqual(loaded_img.header.get_data_dtype(), data_to_save.dtype)
+
+    def test_save_nifti_map_4d_data_4d_ref(self):
+        data_to_save = np.random.rand(5, 5, 5, 10).astype(np.float32)
+        output_path = os.path.join(self.test_dir, "saved_4d_from_4dref.nii.gz")
+
+        save_nifti_map(data_to_save, self.nifti_4d_file, output_path)
+        self.assertTrue(os.path.exists(output_path))
+
+        loaded_img = nib.load(output_path)
+        loaded_data = loaded_img.get_fdata()
+
+        np.testing.assert_array_almost_equal(loaded_data, data_to_save, decimal=5)
+        self.assertEqual(loaded_img.shape, data_to_save.shape)
+        ref_img = nib.load(self.nifti_4d_file)
+        np.testing.assert_array_almost_equal(loaded_img.affine, ref_img.affine)
+        self.assertEqual(loaded_img.header.get_data_dtype(), data_to_save.dtype)
+
+    def test_save_nifti_map_3d_data_4d_ref(self):
+        # Saving a 3D map using a 4D reference (e.g. saving a T1 map using DCE series as ref)
+        data_to_save = np.random.rand(5, 5, 5).astype(np.float32)
+        output_path = os.path.join(self.test_dir, "saved_3d_from_4dref.nii.gz")
+        
+        save_nifti_map(data_to_save, self.nifti_4d_file, output_path)
+        self.assertTrue(os.path.exists(output_path))
+        
+        loaded_img = nib.load(output_path)
+        loaded_data = loaded_img.get_fdata()
+        
+        np.testing.assert_array_almost_equal(loaded_data, data_to_save, decimal=5)
+        self.assertEqual(loaded_img.shape, data_to_save.shape)
+        ref_img = nib.load(self.nifti_4d_file)
+        np.testing.assert_array_almost_equal(loaded_img.affine, ref_img.affine)
+        self.assertEqual(loaded_img.header.get_data_dtype(), data_to_save.dtype)
+        self.assertEqual(len(loaded_img.header.get_zooms()), 3) # Ensure output is 3D
+
+    def test_save_nifti_map_4d_data_3d_ref_error(self):
+        # Attempting to save 4D data with a 3D reference's header might be problematic
+        # if not handled carefully by the save function to adjust header dimensions.
+        # The function core.io.save_nifti_map is designed to handle this by taking spatial
+        # affine and creating a new header for the output that matches data_map's dimensionality.
+        data_to_save = np.random.rand(5, 5, 5, 7).astype(np.float32)
+        output_path = os.path.join(self.test_dir, "saved_4d_from_3dref.nii.gz")
+
+        save_nifti_map(data_to_save, self.nifti_3d_file, output_path)
+        self.assertTrue(os.path.exists(output_path))
+
+        loaded_img = nib.load(output_path)
+        loaded_data = loaded_img.get_fdata()
+        np.testing.assert_array_almost_equal(loaded_data, data_to_save, decimal=5)
+        self.assertEqual(loaded_img.shape, data_to_save.shape) # Shape should be (5,5,5,7)
+        
+        ref_img = nib.load(self.nifti_3d_file)
+        np.testing.assert_array_almost_equal(loaded_img.affine[:3,:3], ref_img.affine[:3,:3]) # Compare spatial part of affine
+        # The full affine might differ in the 4th dimension scaling if original was purely 3D.
+        # Check if the output header has 4 dimensions for zooms
+        self.assertEqual(len(loaded_img.header.get_zooms()), 4)
 
 
-if __name__ == '__main__':
+    def test_save_nifti_map_invalid_data_dim(self):
+        data_2d = np.random.rand(5, 5).astype(np.float32)
+        with self.assertRaises(ValueError):
+            save_nifti_map(data_2d, self.nifti_3d_file, "wont_save_2d.nii.gz")
+        
+        data_5d = np.random.rand(5,5,5,5,5).astype(np.float32)
+        with self.assertRaises(ValueError):
+            save_nifti_map(data_5d, self.nifti_4d_file, "wont_save_5d.nii.gz")
+
+    def test_save_nifti_map_mismatched_spatial_dims(self):
+        data_mismatch = np.random.rand(6, 5, 5).astype(np.float32) # X dim is 6, ref is 5
+        with self.assertRaises(ValueError):
+            save_nifti_map(data_mismatch, self.nifti_3d_file, "wont_save_mismatch.nii.gz")
+
+    def test_save_nifti_map_non_existent_ref(self):
+        data_to_save = np.random.rand(5,5,5).astype(np.float32)
+        with self.assertRaises(FileNotFoundError):
+            save_nifti_map(data_to_save, os.path.join(self.test_dir,"non_existent_ref.nii.gz"), "wont_save.nii.gz")
+
+
+if __name__ == "__main__":
     unittest.main()

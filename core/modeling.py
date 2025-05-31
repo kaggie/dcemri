@@ -1,7 +1,7 @@
 import numpy as np
 from scipy.optimize import curve_fit
 from scipy.interpolate import interp1d
-from scipy.integrate import cumtrapz, solve_ivp
+from scipy.integrate import cumulative_trapezoid, solve_ivp # Changed cumtrapz
 import multiprocessing
 import os
 from functools import partial # Not strictly used in the final version, but good for potential future use
@@ -235,7 +235,8 @@ def solve_2cxm_ode_model(t_eval_points: np.ndarray, Fp: float, PS: float, vp: fl
             t_eval=t_eval_points, # Points where solution is desired
             args=(Fp, PS, vp, ve, Cp_aif_interp_func), # Arguments for _ode_system_2cxm
             method='RK45', # Standard explicit Runge-Kutta method
-            dense_output=False # Not needing continuous solution here
+            dense_output=False, # Not needing continuous solution here
+            rtol=1e-6, atol=1e-8 # Tighter tolerances
         )
 
         if sol.status != 0: # Check if solver was successful
@@ -255,7 +256,7 @@ def solve_2cxm_ode_model(t_eval_points: np.ndarray, Fp: float, PS: float, vp: fl
 # --- Single-Voxel Fitting Functions ---
 def fit_standard_tofts(t_tissue: np.ndarray, Ct_tissue: np.ndarray, Cp_interp_func: callable,
                        initial_params: tuple = (0.1, 0.2),
-                       bounds_params: tuple = ([0, 0], [1.0, 1.0])) -> tuple[tuple, np.ndarray]:
+                       bounds_params: tuple = ([0, 0], [1.0, 1.0])) -> tuple[tuple, np.ndarray]: # Reverted to bounds_params
     """
     Fits the Standard Tofts model to a single voxel's tissue concentration data.
 
@@ -277,15 +278,17 @@ def fit_standard_tofts(t_tissue: np.ndarray, Ct_tissue: np.ndarray, Cp_interp_fu
     # Basic check for valid input data for fitting
     if not (isinstance(t_tissue, np.ndarray) and isinstance(Ct_tissue, np.ndarray) and \
             len(t_tissue) > 1 and len(Ct_tissue) == len(t_tissue)):
-        return (np.nan, np.nan), np.full_like(Ct_tissue if isinstance(Ct_tissue, np.ndarray) else t_tissue, np.nan)
-    
+        return (np.nan,) * len(initial_params), np.full_like(Ct_tissue if isinstance(Ct_tissue, np.ndarray) and Ct_tissue.size > 0 else t_tissue, np.nan)
+    if len(t_tissue) < len(initial_params): # Check if enough data points for parameters
+        return (np.nan,) * len(initial_params), np.full_like(t_tissue, np.nan)
+
     try:
         # Define the objective function for curve_fit (Standard Tofts model)
         objective_func = lambda t_obj, Ktrans, ve: standard_tofts_model_conv(t_obj, Ktrans, ve, Cp_interp_func)
         
         popt, pcov = curve_fit(
             objective_func, t_tissue, Ct_tissue,
-            p0=initial_params, bounds=bounds_params,
+            p0=initial_params, bounds=bounds_params, # Use bounds_params
             method='trf', # Trust Region Reflective algorithm, good for bounds
             ftol=1e-4, xtol=1e-4, gtol=1e-4 # Tolerances for termination
         )
@@ -297,7 +300,7 @@ def fit_standard_tofts(t_tissue: np.ndarray, Ct_tissue: np.ndarray, Cp_interp_fu
 
 def fit_extended_tofts(t_tissue: np.ndarray, Ct_tissue: np.ndarray, Cp_interp_func: callable,
                        initial_params: tuple = (0.1, 0.2, 0.05),
-                       bounds_params: tuple = ([0, 0, 0], [1.0, 1.0, 0.5])) -> tuple[tuple, np.ndarray]:
+                       bounds_params: tuple = ([0, 0, 0], [1.0, 1.0, 0.5])) -> tuple[tuple, np.ndarray]: # Reverted to bounds_params
     """
     Fits the Extended Tofts model to a single voxel's tissue concentration data.
 
@@ -317,7 +320,9 @@ def fit_extended_tofts(t_tissue: np.ndarray, Ct_tissue: np.ndarray, Cp_interp_fu
     """
     if not (isinstance(t_tissue, np.ndarray) and isinstance(Ct_tissue, np.ndarray) and \
             len(t_tissue) > 1 and len(Ct_tissue) == len(t_tissue)):
-        return (np.nan, np.nan, np.nan), np.full_like(Ct_tissue if isinstance(Ct_tissue, np.ndarray) else t_tissue, np.nan)
+        return (np.nan,) * len(initial_params), np.full_like(Ct_tissue if isinstance(Ct_tissue, np.ndarray) and Ct_tissue.size > 0 else t_tissue, np.nan)
+    if len(t_tissue) < len(initial_params):
+        return (np.nan,) * len(initial_params), np.full_like(t_tissue, np.nan)
         
     try:
         # Objective function for curve_fit (Extended Tofts model)
@@ -325,7 +330,7 @@ def fit_extended_tofts(t_tissue: np.ndarray, Ct_tissue: np.ndarray, Cp_interp_fu
         
         popt, pcov = curve_fit(
             objective_func, t_tissue, Ct_tissue,
-            p0=initial_params, bounds=bounds_params,
+            p0=initial_params, bounds=bounds_params, # Use bounds_params
             method='trf', ftol=1e-4, xtol=1e-4, gtol=1e-4
         )
         fitted_curve = extended_tofts_model_conv(t_tissue, popt[0], popt[1], popt[2], Cp_interp_func)
@@ -336,7 +341,7 @@ def fit_extended_tofts(t_tissue: np.ndarray, Ct_tissue: np.ndarray, Cp_interp_fu
 def fit_patlak_model(t_tissue: np.ndarray, Ct_tissue: np.ndarray,
                      Cp_interp_func: callable, integral_Cp_dt_interp_func: callable,
                      initial_params: tuple = (0.05, 0.05),
-                     bounds_params: tuple = ([0, 0], [1.0, 0.5])) -> tuple[tuple, np.ndarray]:
+                     bounds_params: tuple = ([0, 0], [1.0, 0.5])) -> tuple[tuple, np.ndarray]: # Reverted to bounds_params
     """
     Fits the Patlak model to a single voxel's tissue concentration data.
 
@@ -357,7 +362,9 @@ def fit_patlak_model(t_tissue: np.ndarray, Ct_tissue: np.ndarray,
     """
     if not (isinstance(t_tissue, np.ndarray) and isinstance(Ct_tissue, np.ndarray) and \
             len(t_tissue) > 1 and len(Ct_tissue) == len(t_tissue)):
-        return (np.nan, np.nan), np.full_like(Ct_tissue if isinstance(Ct_tissue, np.ndarray) else t_tissue, np.nan)
+        return (np.nan,) * len(initial_params), np.full_like(Ct_tissue if isinstance(Ct_tissue, np.ndarray) and Ct_tissue.size > 0 else t_tissue, np.nan)
+    if len(t_tissue) < len(initial_params):
+        return (np.nan,) * len(initial_params), np.full_like(t_tissue, np.nan)
 
     # Objective function for curve_fit (Patlak model)
     def objective_func(t_obj, Ktrans_patlak, vp_patlak):
@@ -366,7 +373,7 @@ def fit_patlak_model(t_tissue: np.ndarray, Ct_tissue: np.ndarray,
     try:
         popt, pcov = curve_fit(
             objective_func, t_tissue, Ct_tissue,
-            p0=initial_params, bounds=bounds_params,
+            p0=initial_params, bounds=bounds_params, # Use bounds_params
             method='trf', xtol=1e-4, ftol=1e-4, gtol=1e-4
         )
         fitted_curve = patlak_model(t_tissue, popt[0], popt[1], Cp_interp_func, integral_Cp_dt_interp_func)
@@ -376,7 +383,7 @@ def fit_patlak_model(t_tissue: np.ndarray, Ct_tissue: np.ndarray,
 
 def fit_2cxm_model(t_tissue: np.ndarray, Ct_tissue: np.ndarray, Cp_aif_interp_func: callable, t_aif_max: float,
                    initial_params: tuple = (0.1, 0.05, 0.05, 0.1), 
-                   bounds_params: tuple = ([0, 0, 1e-3, 1e-3], [2.0, 1.0, 0.5, 0.7])) -> tuple[tuple, np.ndarray]:
+                   bounds_params: tuple = ([0, 0, 1e-3, 1e-3], [2.0, 1.0, 0.5, 0.7])) -> tuple[tuple, np.ndarray]: # Reverted to bounds_params
     """
     Fits the 2-Compartment Exchange Model (2CXM) to a single voxel's tissue concentration data.
 
@@ -398,7 +405,9 @@ def fit_2cxm_model(t_tissue: np.ndarray, Ct_tissue: np.ndarray, Cp_aif_interp_fu
     """
     if not (isinstance(t_tissue, np.ndarray) and isinstance(Ct_tissue, np.ndarray) and \
             len(t_tissue) > 1 and len(Ct_tissue) == len(t_tissue)):
-        return (np.nan, np.nan, np.nan, np.nan), np.full_like(Ct_tissue if isinstance(Ct_tissue, np.ndarray) else t_tissue, np.nan)
+        return (np.nan,) * len(initial_params), np.full_like(Ct_tissue if isinstance(Ct_tissue, np.ndarray) and Ct_tissue.size > 0 else t_tissue, np.nan)
+    if len(t_tissue) < len(initial_params):
+        return (np.nan,) * len(initial_params), np.full_like(t_tissue, np.nan)
 
     # Objective function for curve_fit (2CXM model)
     def objective_func(t_obj, Fp, PS, vp, ve):
@@ -407,7 +416,7 @@ def fit_2cxm_model(t_tissue: np.ndarray, Ct_tissue: np.ndarray, Cp_aif_interp_fu
     try:
         popt, pcov = curve_fit(
             objective_func, t_tissue, Ct_tissue,
-            p0=initial_params, bounds=bounds_params,
+            p0=initial_params, bounds=bounds_params, # Use bounds_params
             method='trf', 
             ftol=1e-3, xtol=1e-3, gtol=1e-3 # Looser tolerances for potentially complex ODE fits
         )
@@ -489,7 +498,7 @@ def _fit_voxel_worker(args_tuple: tuple) -> tuple:
             param_names = ["Ktrans", "ve", "vp"]
         elif model_name == "Patlak":
             # Patlak model requires the integral of Cp_aif. Pre-calculate and interpolate it.
-            integral_Cp_dt_aif = cumtrapz(Cp_aif, t_aif, initial=0)
+            integral_Cp_dt_aif = cumulative_trapezoid(Cp_aif, t_aif, initial=0) # Changed cumtrapz
             integral_Cp_dt_interp_func = interp1d(t_aif, integral_Cp_dt_aif, kind='linear', 
                                                   bounds_error=False, fill_value=0.0)
             params_tuple, _ = fit_patlak_model(t_tissue_clean, Ct_voxel_clean, Cp_interp_func, 
@@ -558,9 +567,11 @@ def _base_fit_voxelwise(
                                Voxels with errors or outside the mask will have NaN.
     """
     # --- Input Validations ---
-    if not isinstance(Ct_data, np.ndarray) or Ct_data.ndim != 4:
-        raise ValueError("Ct_data must be a 4D NumPy array (x, y, z, time).")
-    if not isinstance(t_tissue, np.ndarray) or t_tissue.ndim != 1 or Ct_data.shape[3] != len(t_tissue):
+    if not isinstance(Ct_data, np.ndarray):
+        raise ValueError(f"Ct_data is not a NumPy array. Type: {type(Ct_data)}")
+    if Ct_data.ndim != 4:
+        raise ValueError(f"Ct_data must be 4D. Got {Ct_data.ndim} dimensions. Shape: {Ct_data.shape}")
+    if not isinstance(t_tissue, np.ndarray) or t_tissue.ndim != 1 or Ct_data.shape[3] != len(t_tissue): # Original check after new ones
         raise ValueError("t_tissue must be a 1D array matching the time dimension of Ct_data.")
     if not isinstance(t_aif, np.ndarray) or not isinstance(Cp_aif, np.ndarray) or \
        t_aif.ndim != 1 or Cp_aif.ndim != 1 or len(t_aif) != len(Cp_aif):

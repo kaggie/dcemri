@@ -55,7 +55,7 @@ def load_dce_series(filepath: str):
     img = load_nifti_file(filepath)
     if img.ndim != 4:
         raise ValueError("DCE series must be a 4D NIfTI image.")
-    return img.get_fdata()
+    return img.get_fdata(), img.affine, img.header
 
 def load_t1_map(filepath: str, dce_shape: tuple = None):
     """
@@ -85,7 +85,7 @@ def load_t1_map(filepath: str, dce_shape: tuple = None):
             raise ValueError(
                 "T1 map dimensions do not match DCE series spatial dimensions."
             )
-    return img.get_fdata()
+    return img.get_fdata(), img.affine, img.header
 
 def load_mask(filepath: str, reference_shape: tuple = None):
     """
@@ -120,7 +120,7 @@ def load_mask(filepath: str, reference_shape: tuple = None):
                 "Mask dimensions do not match the reference image dimensions."
             )
     data = img.get_fdata()
-    return data.astype(bool)
+    return data.astype(bool), img.affine, img.header
 
 def save_nifti_map(data_map: np.ndarray, original_nifti_ref_path: str, output_filepath: str):
     """

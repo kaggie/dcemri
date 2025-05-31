@@ -123,7 +123,7 @@ def save_multiple_roi_statistics_csv(
     Raises:
         IOError: If an error occurs during file writing.
         Exception: For other unexpected errors during the process.
-    """
+    '''
     if not stats_results_list:
         # It might be desirable to log this or inform the user.
         # For now, if the list is empty, we simply don't create a file.
@@ -133,19 +133,24 @@ def save_multiple_roi_statistics_csv(
     # Determine the fieldnames for the CSV file.
     # These include contextual information (MapName, SliceIndex, ROIName)
     # and the actual statistical measures (Mean, Median, etc.).
-    # We try to get the stat keys from the first valid dictionary to ensure all are captured.
-    first_valid_stats_dict = None
-    for _, _, _, s_dict in stats_results_list: # Iterate to find a non-empty/valid stats_dict
-        if s_dict and s_dict.get("N_valid", 0) > 0 : # Check if it has valid data points
-            first_valid_stats_dict = s_dict
-            break
+    # Determine the fieldnames for the CSV file by collecting all unique stat keys.
+    # These include contextual information (MapName, SliceIndex, ROIName)
+    # and all unique actual statistical measures found across all stats_dicts.
+    all_stat_keys = set()
+    has_any_valid_stats = False
+    for _, _, _, s_dict in stats_results_list:
+        if s_dict: # s_dict could be None
+            all_stat_keys.update(s_dict.keys())
+            if s_dict.get("N_valid", 0) > 0:
+                has_any_valid_stats = True
     
-    if not first_valid_stats_dict:
-         # If all ROIs are empty or only contain NaNs, use a default set of stat keys.
-         # This ensures the CSV still has the correct headers for stats columns.
+    if not all_stat_keys and not has_any_valid_stats :
+         # If all ROIs are empty/None and no keys could be gathered (e.g. all stats_dicts were None)
+         # use a default set of stat keys.
          stat_keys = ["N", "N_valid", "Mean", "StdDev", "Median", "Min", "Max"]
     else:
-         stat_keys = list(first_valid_stats_dict.keys()) # Get keys from the first valid dict
+         # Sort for consistent column order, though not strictly necessary for DictWriter
+         stat_keys = sorted(list(all_stat_keys))
 
     # Standard headers for context, followed by the dynamically obtained statistic keys
     fieldnames = ['MapName', 'SliceIndex', 'ROIName'] + stat_keys
