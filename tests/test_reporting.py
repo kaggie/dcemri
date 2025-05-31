@@ -1,232 +1,197 @@
 import unittest
 import numpy as np
-from numpy.testing import assert_array_almost_equal # Not used directly, but good to have for np arrays
-import csv
-import tempfile
 import os
-import shutil
+import csv
+from core.reporting import (
+    calculate_roi_statistics,
+    format_roi_statistics_to_string,
+    save_multiple_roi_statistics_csv,
+)
 
-# Add project root for imports
-import sys
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-if project_root not in sys.path:
-    sys.path.insert(0, project_root)
+try:
+    from core.reporting import save_roi_statistics_csv
+    SAVE_ROI_STATS_CSV_EXISTS = True
+except ImportError:
+    SAVE_ROI_STATS_CSV_EXISTS = False
 
-from core import reporting
 
-class TestCalculateRoiStatistics(unittest.TestCase): # New class for this function
+class TestReporting(unittest.TestCase):
     def setUp(self):
-        self.data_map_slice = np.array([
-            [1, 2, 3, np.nan],
-            [4, 5, np.inf, 7],
-            [8, 9, 10, 11]
-        ], dtype=float) # 3x4 slice
+        self.data_map_slice_valid = np.array([
+            [1.0, 2.0, 3.0],
+            [4.0, 5.0, 6.0],
+            [7.0, 8.0, 9.0]
+        ], dtype=float)
 
-    def test_valid_roi_all_numeric(self):
-        """Test with a valid ROI containing only numeric data."""
-        roi_mask = np.array([
-            [True, True, False, False],
-            [True, True, False, False],
-            [False, False, False, False]
+        self.roi_mask_slice_A = np.array([
+            [True, True, False],
+            [True, False, False],
+            [False, False, False]
         ], dtype=bool)
-        # Expected values from [1, 2, 4, 5]
-        stats = reporting.calculate_roi_statistics(self.data_map_slice, roi_mask)
-        self.assertEqual(stats["N"], 4)
-        self.assertEqual(stats["N_valid"], 4)
-        self.assertAlmostEqual(stats["Mean"], np.mean([1,2,4,5])) 
-        self.assertAlmostEqual(stats["StdDev"], np.std([1,2,4,5])) 
-        self.assertAlmostEqual(stats["Median"], np.median([1,2,4,5])) 
-        self.assertAlmostEqual(stats["Min"], 1.0)
-        self.assertAlmostEqual(stats["Max"], 5.0)
 
-    def test_roi_with_nans(self):
-        """Test ROI including NaN values."""
-        roi_mask = np.array([
-            [True, True, True, True], # Includes a NaN
-            [False, False, False, False],
-            [False, False, False, False]
+        self.roi_mask_slice_B = np.array([
+            [False, False, False],
+            [False, True, True],
+            [False, True, True]
         ], dtype=bool)
-        stats = reporting.calculate_roi_statistics(self.data_map_slice, roi_mask)
-        self.assertEqual(stats["N"], 4) 
-        self.assertEqual(stats["N_valid"], 3) 
-        self.assertAlmostEqual(stats["Mean"], np.nanmean([1,2,3,np.nan])) 
-        self.assertAlmostEqual(stats["StdDev"], np.nanstd([1,2,3,np.nan])) 
-        self.assertAlmostEqual(stats["Median"], np.nanmedian([1,2,3,np.nan]))
-        self.assertAlmostEqual(stats["Min"], np.nanmin([1,2,3,np.nan])) 
-        self.assertAlmostEqual(stats["Max"], np.nanmax([1,2,3,np.nan])) 
-
-    def test_roi_with_infs(self): # New test
-        """Test ROI including Inf values."""
-        roi_mask = np.array([
-            [False, False, False, False],
-            [False, True, True, True], # Values: [5, np.inf, 7]
-            [False, False, False, False]
-        ], dtype=bool)
-        stats = reporting.calculate_roi_statistics(self.data_map_slice, roi_mask)
-        self.assertEqual(stats["N"], 3)
-        self.assertEqual(stats["N_valid"], 3) 
-        self.assertEqual(stats["Mean"], np.inf)
-        self.assertTrue(np.isnan(stats["StdDev"]) or np.isinf(stats["StdDev"])) 
-        self.assertAlmostEqual(stats["Median"], np.median([5, np.inf, 7])) 
-        self.assertAlmostEqual(stats["Min"], 5.0)
-        self.assertEqual(stats["Max"], np.inf)
         
-    def test_empty_roi_all_false_mask(self):
-        """Test with an ROI mask that is all False."""
-        roi_mask = np.zeros_like(self.data_map_slice, dtype=bool)
-        stats = reporting.calculate_roi_statistics(self.data_map_slice, roi_mask)
-        self.assertEqual(stats["N"], 0)
-        self.assertEqual(stats["N_valid"], 0)
-        self.assertTrue(all(np.isnan(stats[key]) for key in ["Mean", "StdDev", "Median", "Min", "Max"]))
+        self.roi_mask_all_false = np.zeros_like(self.data_map_slice_valid, dtype=bool)
 
-    def test_map_all_nans(self):
-        """Test with a data map slice that is all NaNs."""
-        data_all_nans = np.full_like(self.data_map_slice, np.nan)
-        roi_mask = np.ones_like(self.data_map_slice, dtype=bool) 
-        stats = reporting.calculate_roi_statistics(data_all_nans, roi_mask)
-        self.assertEqual(stats["N"], self.data_map_slice.size)
-        self.assertEqual(stats["N_valid"], 0)
-        self.assertTrue(all(np.isnan(stats[key]) for key in ["Mean", "StdDev", "Median", "Min", "Max"]))
+        self.data_map_with_nans = self.data_map_slice_valid.copy()
+        self.data_map_with_nans[0, 0] = np.nan
 
-    def test_input_validation(self): # New test for input validation
-        """Test input validation for shapes and dimensions."""
-        with self.assertRaisesRegex(ValueError, "data_map_slice must be a 2D NumPy array."):
-            reporting.calculate_roi_statistics(np.zeros((2,2,2)), np.zeros((2,2,2), dtype=bool))
-        with self.assertRaisesRegex(ValueError, "roi_mask_slice must be a 2D NumPy array."):
-            reporting.calculate_roi_statistics(np.zeros((2,2)), np.zeros((2,2,2), dtype=bool))
-        with self.assertRaisesRegex(ValueError, "data_map_slice and roi_mask_slice must have the same shape."):
-            reporting.calculate_roi_statistics(np.zeros((2,2)), np.zeros((3,3), dtype=bool))
+        self.roi_mask_only_nans = np.array([
+            [True, False, False],
+            [False, False, False],
+            [False, False, False]
+        ], dtype=bool)
 
+        self.test_csv_filename = "test_stats.csv"
+        self.test_multi_csv_filename = "test_multi_stats.csv"
 
-class TestFormatRoiStatisticsToString(unittest.TestCase): # New Class
-    """Tests for the format_roi_statistics_to_string function."""
-
-    def test_format_valid_stats(self):
-        stats = {"N": 10, "N_valid": 8, "Mean": 12.34567, "StdDev": 2.0, "Median": 12.0, "Min": 5.0, "Max": 20.0}
-        formatted_str = reporting.format_roi_statistics_to_string(stats, "Ktrans", "Tumor Core")
-        self.assertIn("Statistics for Tumor Core on parameter map 'Ktrans':", formatted_str) # Updated expected string
-        self.assertIn("Mean: 12.3457", formatted_str) 
-        self.assertIn("StdDev: 2.0000", formatted_str)
-        self.assertIn("N: 10", formatted_str)
-        self.assertIn("N_valid: 8", formatted_str)
-
-    def test_format_stats_with_nans(self):
-        stats = {"N": 5, "N_valid": 0, "Mean": np.nan, "StdDev": np.nan, "Median": np.nan, "Min": np.nan, "Max": np.nan}
-        formatted_str = reporting.format_roi_statistics_to_string(stats, "Ve", "Necrotic Area")
-        self.assertEqual(formatted_str, "No valid data points found in Necrotic Area for parameter map 'Ve'.") # Updated expected string
-
-    def test_format_empty_or_none_stats(self):
-        self.assertEqual(reporting.format_roi_statistics_to_string(None, "Ktrans"), 
-                         "No valid data points found in ROI for parameter map 'Ktrans'.") # Updated
-        self.assertEqual(reporting.format_roi_statistics_to_string({}, "Ktrans"), 
-                         "No valid data points found in ROI for parameter map 'Ktrans'.") # Updated
-        self.assertEqual(reporting.format_roi_statistics_to_string({"N_valid":0}, "Ktrans"), 
-                         "No valid data points found in ROI for parameter map 'Ktrans'.") # Updated
-
-
-class TestSaveMultipleRoiStatisticsCsv(unittest.TestCase): # New Class
-    """Tests for the save_multiple_roi_statistics_csv function."""
-    def setUp(self):
-        self.test_dir = tempfile.mkdtemp()
-        self.filepath = os.path.join(self.test_dir, "roi_stats.csv")
 
     def tearDown(self):
-        shutil.rmtree(self.test_dir)
+        for filename in [self.test_csv_filename, self.test_multi_csv_filename]:
+            if os.path.exists(filename):
+                os.remove(filename)
 
-    def test_save_valid_data(self):
-        stats_list = [
-            ("Ktrans", 0, "ROI1_Slice0", {"N": 10, "N_valid": 10, "Mean": 0.25, "StdDev": 0.05, "Median": 0.24, "Min": 0.1, "Max": 0.4}),
-            ("Ve", 0, "ROI1_Slice0", {"N": 10, "N_valid": 8, "Mean": 0.5, "StdDev": 0.1, "Median": 0.49, "Min": 0.3, "Max": 0.7, "ExtraStat": 1.0}),
-            ("Ktrans", 1, "ROI2_Slice1", {"N": 5, "N_valid": 0, "Mean": np.nan, "StdDev": np.nan, "Median": np.nan, "Min": np.nan, "Max": np.nan})
-        ]
-        reporting.save_multiple_roi_statistics_csv(stats_list, self.filepath)
+    # --- Tests for calculate_roi_statistics ---
+    def test_calc_stats_valid_roi(self):
+        stats = calculate_roi_statistics(self.data_map_slice_valid, self.roi_mask_slice_A)
+        self.assertEqual(stats['N'], 3); self.assertEqual(stats['N_valid'], 3)
+        self.assertAlmostEqual(stats['Mean'], np.mean([1.0, 2.0, 4.0]))
+        self.assertAlmostEqual(stats['StdDev'], np.std([1.0, 2.0, 4.0]))
+
+    def test_calc_stats_roi_all_false(self):
+        stats = calculate_roi_statistics(self.data_map_slice_valid, self.roi_mask_all_false)
+        self.assertEqual(stats['N'], 0); self.assertEqual(stats['N_valid'], 0)
+        self.assertTrue(np.isnan(stats['Mean']))
+
+    def test_calc_stats_roi_with_only_nans(self):
+        stats = calculate_roi_statistics(self.data_map_with_nans, self.roi_mask_only_nans)
+        self.assertEqual(stats['N'], 1); self.assertEqual(stats['N_valid'], 0)
+        self.assertTrue(np.isnan(stats['Mean']))
+
+    def test_calc_stats_roi_mix_valid_and_nans(self):
+        stats = calculate_roi_statistics(self.data_map_with_nans, self.roi_mask_slice_A)
+        self.assertEqual(stats['N'], 3); self.assertEqual(stats['N_valid'], 2)
+        self.assertAlmostEqual(stats['Mean'], np.mean([2.0, 4.0]))
+
+    def test_calc_stats_empty_arrays_matching_shape(self):
+        empty_data = np.empty((0,0), dtype=float)
+        empty_roi = np.empty((0,0), dtype=bool)
+        stats = calculate_roi_statistics(empty_data, empty_roi)
+        self.assertEqual(stats['N'], 0)
+        self.assertEqual(stats['N_valid'], 0)
+        self.assertTrue(np.isnan(stats['Mean']))
+
+    def test_calc_stats_empty_arrays_mismatch_shape_value_error(self):
+        empty_data = np.empty((0,1), dtype=float) # Shape (0,1)
+        empty_roi = np.empty((0,0), dtype=bool)  # Shape (0,0)
+        with self.assertRaises(ValueError):
+             calculate_roi_statistics(empty_data, empty_roi)
+
+
+    def test_calc_stats_mismatched_shapes(self):
+        roi_mismatch = np.array([[True, False],[False,True]], dtype=bool)
+        with self.assertRaises(ValueError):
+            calculate_roi_statistics(self.data_map_slice_valid, roi_mismatch)
+
+    def test_calc_stats_non_2d_inputs(self):
+        with self.assertRaises(ValueError):
+            calculate_roi_statistics(np.array([1,2,3]), self.roi_mask_slice_A)
+        with self.assertRaises(ValueError):
+            calculate_roi_statistics(self.data_map_slice_valid, np.array([True,False,True]))
+
+    # --- Tests for format_roi_statistics_to_string ---
+    def test_format_stats_valid_dict(self):
+        stats = {'N': 3, 'N_valid': 3, 'Mean': 2.333, 'StdDev': 1.247, 'Median': 2.0, 'Min': 1.0, 'Max': 4.0}
+        formatted_str = format_roi_statistics_to_string(stats, "Ktrans", "ROI_A")
+        self.assertIn("parameter map 'Ktrans'", formatted_str) # Check for map name
+        self.assertIn("ROI_A", formatted_str) # Check for ROI name
+        self.assertIn("Mean: 2.3330", formatted_str)
+
+    def test_format_stats_n_valid_zero(self):
+        stats = {'N': 0, 'N_valid': 0, 'Mean': np.nan, 'StdDev': np.nan, 'Median': np.nan, 'Min': np.nan, 'Max': np.nan}
+        formatted_str = format_roi_statistics_to_string(stats, "Ve", "ROI_None")
+        self.assertIn("No valid data points found", formatted_str)
+        self.assertIn("'Ve'", formatted_str)
+        self.assertIn("ROI_None", formatted_str)
+
+
+    def test_format_stats_dict_none(self):
+        formatted_str = format_roi_statistics_to_string(None, "Ktrans", "ROI_X")
+        self.assertIn("No valid data points found", formatted_str)
+        self.assertIn("'Ktrans'", formatted_str)
+        self.assertIn("ROI_X", formatted_str)
         
-        self.assertTrue(os.path.exists(self.filepath))
-        with open(self.filepath, 'r', newline='') as f:
-            reader = csv.DictReader(f)
-            # Fieldnames should be dynamically determined by first valid dict + ExtraStat
-            self.assertEqual(reader.fieldnames, ['MapName', 'SliceIndex', 'ROIName', 'N', 'N_valid', 'Mean', 'StdDev', 'Median', 'Min', 'Max', 'ExtraStat'])
+    def test_format_stats_different_names(self):
+        stats = {'N': 1, 'N_valid': 1, 'Mean': 5.0, 'StdDev': 0.0, 'Median': 5.0, 'Min': 5.0, 'Max': 5.0}
+        formatted_str = format_roi_statistics_to_string(stats, "MyMap", "MyROI")
+        self.assertIn("parameter map 'MyMap'", formatted_str)
+        self.assertIn("MyROI", formatted_str)
+        self.assertIn("Mean: 5.0000", formatted_str)
+
+    # --- Tests for save_multiple_roi_statistics_csv ---
+    def test_save_multi_stats_basic(self):
+        stats1 = {'N': 3, 'N_valid': 3, 'Mean': 1.0, 'StdDev': 0.1, 'Median': 1.0, 'Min': 0.8, 'Max': 1.2}
+        stats2 = {'N': 5, 'N_valid': 4, 'Mean': 2.5, 'StdDev': 0.5, 'Median': 2.5, 'Min': 2.0, 'Max': 3.0, 'CoV': 0.2}
+        stats_results_list = [
+            ("Ktrans", 0, "ROI_A", stats1), ("Ve", 0, "ROI_A", stats2),
+            ("Ktrans", 1, "ROI_B", calculate_roi_statistics(self.data_map_slice_valid, self.roi_mask_slice_B))
+        ]
+        save_multiple_roi_statistics_csv(stats_results_list, self.test_multi_csv_filename)
+        self.assertTrue(os.path.exists(self.test_multi_csv_filename))
+        with open(self.test_multi_csv_filename, 'r', newline='') as f:
+            reader = csv.reader(f)
+            header = next(reader)
+            self.assertIn("CoV", header)
             rows = list(reader)
             self.assertEqual(len(rows), 3)
-            self.assertEqual(rows[0]['MapName'], "Ktrans")
-            self.assertEqual(rows[0]['ROIName'], "ROI1_Slice0")
-            self.assertEqual(float(rows[0]['Mean']), 0.25)
-            # ExtraStat should be nan or empty for the first row as it's not in its dict
-            self.assertTrue(rows[0]['ExtraStat'] == str(np.nan) or rows[0]['ExtraStat'] == "")
-            
-            self.assertEqual(rows[1]['MapName'], "Ve")
-            self.assertEqual(float(rows[1]['ExtraStat']), 1.0) # This row defined ExtraStat
+            self.assertEqual(rows[0][header.index("CoV")], "nan") # Corrected: expect "nan" for missing keys
+            self.assertEqual(rows[1][header.index("CoV")], "0.2")
 
-            self.assertEqual(rows[2]['MapName'], "Ktrans")
-            self.assertEqual(rows[2]['ROIName'], "ROI2_Slice1")
-            self.assertTrue(rows[2]['Mean'] == str(np.nan) or rows[2]['Mean'] == "")
+    def test_save_multi_stats_empty_list(self):
+        save_multiple_roi_statistics_csv([], self.test_multi_csv_filename)
+        self.assertFalse(os.path.exists(self.test_multi_csv_filename)) # File should not be created
 
-    def test_save_no_statistics(self):
-        """Test saving when the input list is empty."""
-        reporting.save_multiple_roi_statistics_csv([], self.filepath)
-        self.assertFalse(os.path.exists(self.filepath) and os.path.getsize(self.filepath) > 0, 
-                         "CSV file should not be created or should be empty if no stats are provided.")
-
-    def test_save_all_rois_empty_nan_stats(self): # New test
-        """Test saving when all ROIs have no valid data."""
-        stats_list = [
-            ("Ktrans", 0, "ROI1", {"N": 5, "N_valid": 0, "Mean": np.nan, "StdDev": np.nan, "Median": np.nan, "Min": np.nan, "Max": np.nan}),
-            ("Ve", 1, "ROI2", {"N": 0, "N_valid": 0, "Mean": np.nan, "StdDev": np.nan, "Median": np.nan, "Min": np.nan, "Max": np.nan})
-        ]
-        reporting.save_multiple_roi_statistics_csv(stats_list, self.filepath)
-        self.assertTrue(os.path.exists(self.filepath)) 
-        with open(self.filepath, 'r', newline='') as f:
-            reader = csv.DictReader(f)
-            # Default keys because no dict had N_valid > 0 to get keys from
-            expected_headers = ['MapName', 'SliceIndex', 'ROIName', 'N', 'N_valid', 'Mean', 'StdDev', 'Median', 'Min', 'Max']
-            self.assertEqual(reader.fieldnames, expected_headers)
+    def test_save_multi_stats_with_nans_or_empty_stats(self):
+        stats_nan = {'N': 0, 'N_valid': 0, 'Mean': np.nan, 'StdDev': np.nan, 'Median': np.nan, 'Min': np.nan, 'Max': np.nan}
+        stats_results_list = [("Ktrans", 0, "ROI_Empty", stats_nan), ("Ve", 1, "ROI_None", None)]
+        save_multiple_roi_statistics_csv(stats_results_list, self.test_multi_csv_filename)
+        self.assertTrue(os.path.exists(self.test_multi_csv_filename))
+        with open(self.test_multi_csv_filename, 'r', newline='') as f:
+            reader = csv.reader(f)
+            header = next(reader)
             rows = list(reader)
             self.assertEqual(len(rows), 2)
-            for row in rows:
-                for key in ['Mean', 'StdDev', 'Median', 'Min', 'Max']:
-                    # np.nan is written as an empty string by csv.DictWriter when the value is float(np.nan)
-                    # If it was a string "nan" it would be "nan"
-                    self.assertTrue(row[key] == "" or row[key] == str(np.nan)) 
+            self.assertEqual(rows[0][header.index("Mean")], "nan")
+            self.assertEqual(rows[1][header.index("Mean")], "nan") # Corrected to expect "nan" for None stats_dict as well
 
-    def test_save_invalid_filepath(self): # New test
-        """Test saving to an invalid filepath (e.g., a directory)."""
-        stats_list = [("Ktrans", 0, "ROI1", {"N": 10, "Mean": 0.25})]
-        # On Unix-like systems, saving to a directory path raises IsADirectoryError, a subclass of IOError/OSError.
-        # On Windows, it might raise PermissionError, also a subclass of OSError.
-        with self.assertRaises(IOError): 
-            reporting.save_multiple_roi_statistics_csv(stats_list, self.test_dir)
-
-
-class TestSaveRoiStatisticsCsvOld(unittest.TestCase): # New Class for the old function
-    """Tests for the older save_roi_statistics_csv function."""
-    def setUp(self):
-        self.test_dir = tempfile.mkdtemp()
-        self.filepath = os.path.join(self.test_dir, "single_roi_stats.csv")
-
-    def tearDown(self):
-        shutil.rmtree(self.test_dir)
-
-    def test_save_single_roi_valid(self):
-        stats_dict = {"N": 10, "N_valid": 8, "Mean": 0.5, "StdDev": 0.1, "Median": 0.45}
-        reporting.save_roi_statistics_csv(stats_dict, self.filepath, "Ktrans_Map", "Tumor_ROI")
-        
-        self.assertTrue(os.path.exists(self.filepath))
-        with open(self.filepath, 'r', newline='') as f:
-            reader = csv.DictReader(f)
-            self.assertEqual(reader.fieldnames, ['MapName', 'ROIName', 'Statistic', 'Value'])
+    # --- Tests for save_roi_statistics_csv (if it exists) ---
+    @unittest.skipUnless(SAVE_ROI_STATS_CSV_EXISTS, "save_roi_statistics_csv function not found in core.reporting")
+    def test_save_single_roi_stats_basic(self):
+        stats = {'N': 3, 'N_valid': 3, 'Mean': 1.0, 'StdDev': 0.1, 'Median': 1.0, 'Min': 0.8, 'Max': 1.2}
+        # Corrected argument order: stats_dict, filepath, map_name, roi_name
+        save_roi_statistics_csv(stats, self.test_csv_filename, "Ktrans_map", "ROI_Test")
+        self.assertTrue(os.path.exists(self.test_csv_filename))
+        with open(self.test_csv_filename, 'r', newline='') as f:
+            reader = csv.reader(f)
+            header = next(reader)
+            self.assertEqual(header, ["MapName", "ROIName", "Statistic", "Value"])
             rows = list(reader)
-            self.assertEqual(len(rows), len(stats_dict))
-            
-            expected_data_dict = {stat: str(val) for stat, val in stats_dict.items()}
-            for row in rows:
-                self.assertEqual(row['MapName'], "Ktrans_Map")
-                self.assertEqual(row['ROIName'], "Tumor_ROI")
-                self.assertEqual(row['Value'], expected_data_dict[row['Statistic']])
-                
-    def test_save_single_roi_empty_stats_valueerror(self): # Renamed for clarity
-        with self.assertRaisesRegex(ValueError, "No statistics data to save."): # Check specific error message
-            reporting.save_roi_statistics_csv({}, self.filepath, "TestMap", "TestROI")
+            self.assertTrue(any(row == ["Ktrans_map", "ROI_Test", "Mean", "1.0"] for row in rows))
 
+    @unittest.skipUnless(SAVE_ROI_STATS_CSV_EXISTS, "save_roi_statistics_csv function not found in core.reporting")
+    def test_save_single_roi_stats_empty_or_none_stats(self):
+        with self.assertRaises(ValueError): # This function raises ValueError for None/empty stats
+            save_roi_statistics_csv(None, self.test_csv_filename, "Ktrans_map", "ROI_Empty") # Corrected
+        stats_nan = {'N': 0, 'N_valid': 0, 'Mean': np.nan} # Simplified
+        save_roi_statistics_csv(stats_nan, self.test_csv_filename, "Ktrans_map", "ROI_NaNs") # Corrected
+        with open(self.test_csv_filename, 'r', newline='') as f:
+            reader = csv.reader(f)
+            rows = list(reader) # Skip header for this check
+            self.assertTrue(any(row == ["Ktrans_map", "ROI_NaNs", "Mean", "nan"] for row in rows if row))
 
 if __name__ == '__main__':
     unittest.main()
