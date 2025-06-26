@@ -1,7 +1,7 @@
 import numpy as np
 from scipy.optimize import curve_fit
 from scipy.interpolate import interp1d
-from scipy.integrate import cumulative_trapezoid, solve_ivp # Changed cumtrapz
+from scipy.integrate import cumulative_trapezoid, solve_ivp
 import multiprocessing
 import os
 from functools import partial # Not strictly used in the final version, but good for potential future use

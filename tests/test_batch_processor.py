@@ -124,10 +124,12 @@ class TestBatchProcessorArgs(unittest.TestCase):
                 "--model", "Standard Tofts", "--out_dir", os.path.join(self.test_dir, "aif_param_test")]
         result = self._run_script(args)
         # Expect it to fail after argparse, during data loading or AIF generation with dummy files
-        self.assertNotEqual(result.returncode, 2, f"Argparse should pass. Stderr: {result.stderr}") 
+        self.assertNotEqual(result.returncode, 2, f"Argparse should pass. Stderr: {result.stderr}")
         # Check if the script's printout includes the parsed AIF params
         # This relies on the script printing args, which it does.
-        self.assertIn("Population AIF Params: [['D_scaler', '0.8'], ['A1', '0.7']]", result.stdout.replace(" ", ""))
+        # Updated to match the actual dict string output from batch_processor.py
+        expected_aif_params_str = "CustomPopulationAIFParameters:{'D_scaler':'0.8','A1':'0.7'}"
+        self.assertIn(expected_aif_params_str, result.stdout.replace(" ", ""))
 
 
 class TestBatchProcessorEndToEnd(unittest.TestCase):
@@ -161,8 +163,16 @@ class TestBatchProcessorEndToEnd(unittest.TestCase):
         data = np.random.rand(*shape).astype(dtype) * 100 # Scale to typical signal values
         if is_dce:
             data[..., shape[-1]//2:] *= 1.5 # Simulate contrast enhancement
+
         if is_mask:
-            data = (data > np.mean(data)).astype(dtype) # Binary mask from random data
+            # Create a more predictable mask with some True values
+            mask_data_content = np.zeros(shape, dtype=dtype)
+            # Example: Mask in the first voxel of each slice
+            if len(shape) == 3: # (X,Y,Z)
+                mask_data_content[0,0,:] = 1
+            elif len(shape) == 2: # (X,Y)
+                 mask_data_content[0,0] = 1
+            data = mask_data_content
 
         img = nib.Nifti1Image(data, affine)
         if is_dce: # Set TR in header for dce
@@ -209,7 +219,7 @@ class TestBatchProcessorEndToEnd(unittest.TestCase):
 
     def test_output_dir_creation(self):
         """Test that the output directory is created if it doesn't exist."""
-        new_output_dir = os.path.join(self.test_dir, "newly_created_output")
+        new_output_dir = os.path.join(self.base_dir, "newly_created_output")
         # DO NOT create new_output_dir here
             
         args = [
@@ -226,7 +236,7 @@ class TestBatchProcessorEndToEnd(unittest.TestCase):
 
     def test_output_dir_is_file_error(self): # Renamed for clarity
         """Test error if output directory path is an existing file."""
-        output_is_file_path = os.path.join(self.test_dir, "i_am_a_file.txt")
+        output_is_file_path = os.path.join(self.base_dir, "i_am_a_file.txt")
         with open(output_is_file_path, 'w') as f:
             f.write("This is a file, not a directory.")
             
@@ -241,7 +251,7 @@ class TestBatchProcessorEndToEnd(unittest.TestCase):
         result = self._run_script(args)
         self.assertNotEqual(result.returncode, 0)
         # Script prints its own error message for this
-        self.assertIn("error creating output directory", result.stdout.lower())
+        self.assertIn("fatal error: could not create output directory", result.stdout.lower())
 
 
 if __name__ == '__main__':

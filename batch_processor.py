@@ -43,7 +43,7 @@ import os
 import sys # Added for sys.path modification explanation
 import numpy as np
 from scipy.interpolate import interp1d
-from scipy.integrate import cumtrapz
+from scipy.integrate import cumulative_trapezoid as cumtrapz
 import nibabel as nib # Not strictly needed if io functions handle all NIfTI aspects
 
 # Add project root to sys.path to allow direct import of core modules
@@ -134,15 +134,15 @@ def main():
     # --- 1. Load Input Data ---
     try:
         print("Step 1: Loading input data...")
-        dce_data = io.load_dce_series(args.dce)
+        dce_data, dce_affine, dce_header = io.load_dce_series(args.dce)
         print(f"  DCE data loaded successfully. Shape: {dce_data.shape}")
 
-        t10_data = io.load_t1_map(args.t1map, dce_shape=dce_data.shape) # Validate T1 map against DCE shape
+        t10_data, t10_affine, t10_header = io.load_t1_map(args.t1map, dce_shape=dce_data.shape) # Validate T1 map against DCE shape
         print(f"  T1 map loaded successfully. Shape: {t10_data.shape}")
 
         mask_data = None
         if args.mask:
-            mask_data = io.load_mask(args.mask, reference_shape=dce_data.shape[:3]) # Validate mask against DCE spatial shape
+            mask_data, mask_affine, mask_header = io.load_mask(args.mask, reference_shape=dce_data.shape[:3]) # Validate mask against DCE spatial shape
             print(f"  Mask loaded successfully. Shape: {mask_data.shape}")
         else:
             print("  No mask provided. Processing will be applied to all voxels.")

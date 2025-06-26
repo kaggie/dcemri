@@ -86,16 +86,25 @@ class TestModeling(unittest.TestCase):
         # If PS is zero, Ce should be zero. dCp_t_dt = (Fp/vp) * (Cp_aif - Cp_t). Ct = vp * Cp_t.
         # Solve for Cp_t:
         def plasma_comp_ode(t, Cp_t_val, Fp, vp, aif_func):
-            return (Fp/vp) * (aif_func(t) - Cp_t_val)
+            # Use effective vp consistent with the main model's ODE system
+            vp_eff_test = vp if vp > 1e-6 else 1e-6
+            return (Fp/vp_eff_test) * (aif_func(t) - Cp_t_val)
         
         from scipy.integrate import solve_ivp # Local import for this specific test logic
-        sol_plasma = solve_ivp(plasma_comp_ode, [self.time[0], self.time[-1]], [0],
-                               t_eval=self.time, args=(self.Fp_true, self.vp_true, self.realistic_aif_interp))
-        expected_Cp_t = sol_plasma.y[0]
+        sol_plasma = solve_ivp(
+            plasma_comp_ode,
+            [self.time[0], self.time[-1]],
+            [0], # y0 for Cp_t
+            t_eval=self.time,
+            args=(self.Fp_true, self.vp_true, self.realistic_aif_interp),
+            method='RK45', rtol=1e-6, atol=1e-8 # Match solver settings
+        )
+        expected_Cp_t = np.maximum(sol_plasma.y[0], 0) # Ensure non-negative
         expected_Ct = self.vp_true * expected_Cp_t
 
-        Ct_tissue = solve_2cxm_ode_model(self.time, self.Fp_true, 0, self.ve_true, self.vp_true, self.realistic_aif_interp)
-        np.testing.assert_array_almost_equal(Ct_tissue, expected_Ct, decimal=2) # Relaxed to decimal 2
+        # Corrected parameter order for solve_2cxm_ode_model: Fp, PS, vp, ve
+        Ct_tissue = solve_2cxm_ode_model(self.time, self.Fp_true, 0, self.vp_true, self.ve_true, self.realistic_aif_interp)
+        np.testing.assert_array_almost_equal(Ct_tissue, expected_Ct, decimal=5) # Increase precision
 
     def test_solve_2cxm_ode_model_ve_zero(self):
         # ve=0 causes ve_eff to be small (1e-6). If PS > 0, PS/ve_eff is huge, may lead to inf/nan from ODE.
