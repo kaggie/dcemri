@@ -147,7 +147,14 @@ class MainWindow(QMainWindow):
         self.left_panel_layout.addWidget(self.model_fitting_group)
         self.left_panel_layout.addWidget(self.processing_section)
         self.left_panel_layout.addWidget(self.roi_stats_group)
+
+        # General Status Label
+        self.status_label = QLabel("Status: Idle")
+        self.status_label.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed) # Ensure it doesn't stretch too much
+        self.left_panel_layout.addWidget(self.status_label)
+
         self.left_panel_layout.addStretch(1) # Add stretch to push controls to the top
+
 
         # --- Create Right Panel (Display, Plot, Log) ---
         self.right_panel_layout = QHBoxLayout()
@@ -1065,21 +1072,21 @@ class MainWindow(QMainWindow):
         Updates the display with generated concentration maps and parameter maps.
         """
         self.log_console.append("Run Analysis button clicked.")
-        self.display_label.setText("Processing... See log for details.") # User feedback
+        self.status_label.setText("Processing... See log for details.") # User feedback
         QApplication.processEvents() # Ensure UI updates
 
         # --- Validate Inputs ---
         if self.dce_data is None or self.t10_data is None:
             self.log_console.append("Error: DCE data and T1 map must be loaded before running analysis.")
-            self.display_label.setText("Analysis failed: DCE or T1 data missing.")
+            self.status_label.setText("Analysis failed: DCE or T1 data missing.")
             return
         if self.aif_time is None or self.aif_concentration is None:
             self.log_console.append("Error: AIF (Arterial Input Function) not defined or loaded.")
-            self.display_label.setText("Analysis failed: AIF not defined.")
+            self.status_label.setText("Analysis failed: AIF not defined.")
             return
         if not self._create_aif_interpolators(): # Ensure AIF interpolators are ready
             self.log_console.append("Error: Failed to create AIF interpolators. Cannot run analysis.")
-            self.display_label.setText("Analysis failed: AIF interpolation error.")
+            self.status_label.setText("Analysis failed: AIF interpolation error.")
             return
 
         try:
@@ -1097,7 +1104,7 @@ class MainWindow(QMainWindow):
                 raise ValueError("Number of baseline points exceeds total time points in DCE data.")
         except ValueError as e:
             self.log_console.append(f"Error: Invalid S->C conversion parameters: {e}")
-            self.display_label.setText(f"Analysis failed: Invalid conversion parameters ({e}).")
+            self.status_label.setText(f"Analysis failed: Invalid conversion parameters ({e}).")
             return
 
         # --- 1. Signal-to-Concentration Conversion ---
@@ -1108,12 +1115,12 @@ class MainWindow(QMainWindow):
                 self.dce_data, self.t10_data, r1_val, tr_val_run, baseline_pts
             )
             self.log_console.append(f"S->C conversion successful. Ct_data shape: {self.Ct_data.shape}")
-            self.display_label.setText(f"S->C conversion successful. Ct data shape: {self.Ct_data.shape}")
+            self.status_label.setText(f"S->C conversion successful. Ct data shape: {self.Ct_data.shape}")
             # Display the mean concentration map
             self.update_displayable_volume("Ct (Concentration Mean)", np.mean(self.Ct_data, axis=3))
         except Exception as e:
             self.log_console.append(f"Error during S->C conversion: {e}\n{traceback.format_exc()}")
-            self.display_label.setText("S->C Conversion failed. See log.")
+            self.status_label.setText("S->C Conversion failed. See log.")
             self.Ct_data = None # Ensure Ct_data is None if conversion fails
             return # Stop analysis if conversion fails
         QApplication.processEvents()
@@ -1121,16 +1128,16 @@ class MainWindow(QMainWindow):
         # --- 2. Voxel-wise Model Fitting ---
         if not self.selected_model_name:
             self.log_console.append("No model selected. Skipping voxel-wise fitting.")
-            self.display_label.setText("S->C conversion done. No model selected for fitting.")
+            self.status_label.setText("S->C conversion done. No model selected for fitting.")
             return
         if self.Ct_data is None: # Should be caught by previous error handling, but as a safeguard
             self.log_console.append("Ct_data not available (e.g. S->C failed). Skipping model fitting.")
-            self.display_label.setText("Ct data not available. Model fitting skipped.")
+            self.status_label.setText("Ct data not available. Model fitting skipped.")
             return
 
         num_cores_to_use = self.num_processes_input.value()
         self.log_console.append(f"Starting parallel voxel-wise {self.selected_model_name} model fitting using up to {num_cores_to_use} cores...")
-        self.display_label.setText(f"Fitting {self.selected_model_name} voxel-wise (up to {num_cores_to_use} cores)... This may take a while.")
+        self.status_label.setText(f"Fitting {self.selected_model_name} voxel-wise (up to {num_cores_to_use} cores)... This may take a while.")
         QApplication.processEvents()
 
         t_tissue = self.dce_time_vector # Time vector for tissue curves
@@ -1141,7 +1148,7 @@ class MainWindow(QMainWindow):
                  self.log_console.append("Warning: dce_time_vector was None, re-created for fitting.")
              else:
                  self.log_console.append("Error: Cannot determine t_tissue for fitting (TR invalid or DCE time vector not set).")
-                 self.display_label.setText("Model fitting failed: Tissue time vector unknown.")
+                  self.status_label.setText("Model fitting failed: Tissue time vector unknown.")
                  return
         
         mask_to_use = self.mask_data if self.mask_data is not None else None # Use mask if loaded
@@ -1159,7 +1166,7 @@ class MainWindow(QMainWindow):
                 self.parameter_maps = modeling.fit_2cxm_model_voxelwise(self.Ct_data, t_tissue, self.aif_time, self.aif_concentration, mask=mask_to_use, num_processes=num_cores_to_use)
             
             self.log_console.append(f"Parallel voxel-wise {self.selected_model_name} fitting completed.")
-            self.display_label.setText(f"{self.selected_model_name} fitting done. Maps generated: {', '.join(self.parameter_maps.keys())}")
+            self.status_label.setText(f"{self.selected_model_name} fitting done. Maps generated: {', '.join(self.parameter_maps.keys())}")
             
             # Add generated parameter maps to displayable volumes
             for map_name, map_data in self.parameter_maps.items():
@@ -1167,7 +1174,7 @@ class MainWindow(QMainWindow):
             self.update_export_buttons_state() # Enable relevant export buttons
         except Exception as e:
             self.log_console.append(f"Error during voxel-wise {self.selected_model_name} fitting: {e}\n{traceback.format_exc()}")
-            self.display_label.setText(f"Voxel-wise {self.selected_model_name} fitting failed. See log.")
+            self.status_label.setText(f"Voxel-wise {self.selected_model_name} fitting failed. See log.")
         QApplication.processEvents() # Final UI update
 
     def update_export_buttons_state(self):
@@ -1226,10 +1233,10 @@ class MainWindow(QMainWindow):
                 self.log_console.append(f"Saving {map_name} map to: {output_filepath} using reference NIfTI: {reference_nifti_path}")
                 io.save_nifti_map(param_map_data, reference_nifti_path, output_filepath)
                 self.log_console.append(f"Parameter map '{map_name}' saved successfully to {output_filepath}.")
-                self.display_label.setText(f"{map_name} map saved to {os.path.basename(output_filepath)}")
+                self.status_label.setText(f"{map_name} map saved to {os.path.basename(output_filepath)}")
             except Exception as e:
                 self.log_console.append(f"Error saving {map_name} map: {e}\n{traceback.format_exc()}")
-                self.display_label.setText(f"Error saving {map_name} map. See log.")
+                self.status_label.setText(f"Error saving {map_name} map. See log.")
 
     # --- Display Update Methods ---
     def update_displayable_volume(self, name: str, data: np.ndarray):
@@ -1905,7 +1912,8 @@ class MainWindow(QMainWindow):
             self.dce_filepath = filepath # Store the path
             try:
                 self.log_console.append(f"Loading DCE series: {filepath}")
-                self.dce_data = io.load_dce_series(filepath) # Load using core.io
+                dce_data_tuple = io.load_dce_series(filepath) # Load using core.io
+                self.dce_data, self.dce_affine, self.dce_header = dce_data_tuple
                 self.dce_shape_for_validation = self.dce_data.shape # Store shape for validating other inputs
                 self.dce_path_label.setText(os.path.basename(filepath)) # Update UI label
                 self.log_console.append(f"DCE series loaded. Shape: {self.dce_data.shape}")
@@ -1943,12 +1951,13 @@ class MainWindow(QMainWindow):
             try:
                 self.log_console.append(f"Loading T1 map: {filepath}")
                 # Load T1 map, validating its spatial dimensions against the loaded DCE series
-                self.t10_data = io.load_t1_map(filepath, dce_shape=self.dce_shape_for_validation)
+                t10_data_tuple = io.load_t1_map(filepath, dce_shape=self.dce_shape_for_validation)
+                self.t10_data, self.t10_affine, self.t10_header = t10_data_tuple
                 self.t1_path_label.setText(os.path.basename(filepath)) # Update UI label
                 self.log_console.append(f"T1 map loaded. Shape: {self.t10_data.shape}")
                 self.update_displayable_volume("T1 Map", self.t10_data) # Add T1 map for display
             except Exception as e:
-                self.t10_data, self.t1_filepath = None, None # Reset on error
+                self.t10_data, self.t1_filepath, self.t10_affine, self.t10_header = None, None, None, None # Reset on error
                 self.t1_path_label.setText("Error loading T1 map.")
                 self.log_console.append(f"Error loading T1 map: {e}\n{traceback.format_exc()}")
 
@@ -1962,29 +1971,75 @@ class MainWindow(QMainWindow):
         filepath, _ = QFileDialog.getOpenFileName(self, "Load Mask NIfTI File", "", "NIfTI Files (*.nii *.nii.gz)")
         if filepath:
             try:
-                self.log_console.append(f"Loading mask: {filepath}"); self.mask_data = io.load_mask(filepath, reference_shape=self.dce_shape_for_validation[:3])
-                self.mask_path_label.setText(os.path.basename(filepath)); self.log_console.append(f"Mask loaded. Shape: {self.mask_data.shape}, Type: {self.mask_data.dtype}"); self.update_displayable_volume("Mask", self.mask_data.astype(np.uint8))
-            except Exception as e: self.mask_data = None; self.mask_path_label.setText("Error loading file"); self.log_console.append(f"Error loading mask: {e}\n{traceback.format_exc()}")
+                self.log_console.append(f"Loading mask: {filepath}")
+                mask_data_tuple = io.load_mask(filepath, reference_shape=self.dce_shape_for_validation[:3])
+                self.mask_data, self.mask_affine, self.mask_header = mask_data_tuple
+                self.mask_path_label.setText(os.path.basename(filepath))
+                self.log_console.append(f"Mask loaded. Shape: {self.mask_data.shape}, Type: {self.mask_data.dtype}")
+                self.update_displayable_volume("Mask", self.mask_data.astype(np.uint8)) # Display as uint8
+            except Exception as e:
+                self.mask_data, self.mask_affine, self.mask_header = None, None, None # Reset on error
+                self.mask_path_label.setText("Error loading mask.")
+                self.log_console.append(f"Error loading mask: {e}\n{traceback.format_exc()}")
 
-    def run_analysis(self): # Unchanged
-        self.log_console.append("Run Analysis button clicked."); self.display_label.setText("Processing... See log for details."); QApplication.processEvents() 
-        if self.dce_data is None or self.t10_data is None: self.log_console.append("Error: DCE data and T1 map must be loaded."); self.display_label.setText("Analysis failed: DCE or T1 data missing."); return
-        if self.aif_time is None or self.aif_concentration is None: self.log_console.append("Error: AIF not defined/loaded."); self.display_label.setText("Analysis failed: AIF not defined."); return
-        if not self._create_aif_interpolators(): self.log_console.append("Error: Failed to create AIF interpolators. Cannot run analysis."); self.display_label.setText("Analysis failed: AIF interpolation error."); return
+    def run_analysis(self):
+        self.log_console.append("Run Analysis button clicked.")
+        self.status_label.setText("Processing... See log for details.")
+        QApplication.processEvents()
+
+        if self.dce_data is None or self.t10_data is None:
+            self.log_console.append("Error: DCE data and T1 map must be loaded.")
+            self.status_label.setText("Analysis failed: DCE or T1 data missing.")
+            return
+        if self.aif_time is None or self.aif_concentration is None:
+            self.log_console.append("Error: AIF not defined/loaded.")
+            self.status_label.setText("Analysis failed: AIF not defined.")
+            return
+        if not self._create_aif_interpolators():
+            self.log_console.append("Error: Failed to create AIF interpolators. Cannot run analysis.")
+            self.status_label.setText("Analysis failed: AIF interpolation error.")
+            return
+
         try:
-            r1_val = float(self.r1_input.text()); tr_val_run = float(self.tr_input.text()); baseline_pts = int(self.baseline_points_input.text()) 
-            if r1_val <= 0 or tr_val_run <= 0 or baseline_pts <= 0: raise ValueError("Params must be positive.")
-            if baseline_pts >= self.dce_data.shape[3]: raise ValueError("Baseline points exceed total time points.")
-        except ValueError as e: self.log_console.append(f"Error: Invalid conversion parameters: {e}"); self.display_label.setText(f"Analysis failed: Invalid params ({e})."); return
-        self.log_console.append(f"Starting S-to-C conversion: r1={r1_val}, TR={tr_val_run}, baseline={baseline_pts}"); QApplication.processEvents()
+            r1_val = float(self.r1_input.text())
+            # Use validated self.tr_float directly
+            if self.tr_float is None or self.tr_float <= 0:
+                raise ValueError("TR value is not valid or not set. Please check TR input in 'Conversion Settings'.")
+            tr_val_run = self.tr_float
+            baseline_pts = int(self.baseline_points_input.text())
+
+            if r1_val <= 0 or baseline_pts <= 0:
+                raise ValueError("r1 relaxivity and baseline points must be positive.")
+            if baseline_pts >= self.dce_data.shape[3]:
+                raise ValueError("Baseline points exceed total time points.")
+        except ValueError as e:
+            self.log_console.append(f"Error: Invalid conversion parameters: {e}")
+            self.status_label.setText(f"Analysis failed: Invalid params ({e}).")
+            return
+
+        self.log_console.append(f"Starting S-to-C conversion: r1={r1_val}, TR={tr_val_run}, baseline={baseline_pts}")
+        QApplication.processEvents()
+
         try:
             self.Ct_data = conversion.signal_to_concentration(self.dce_data, self.t10_data, r1_val, tr_val_run, baseline_pts)
-            self.log_console.append(f"S-to-C conversion successful. Ct_data shape: {self.Ct_data.shape}"); self.display_label.setText(f"Conversion successful. Ct shape: {self.Ct_data.shape}")
+            self.log_console.append(f"S-to-C conversion successful. Ct_data shape: {self.Ct_data.shape}")
+            self.status_label.setText(f"Conversion successful. Ct shape: {self.Ct_data.shape}")
             self.update_displayable_volume("Ct (Concentration Mean)", np.mean(self.Ct_data, axis=3))
-        except Exception as e: self.log_console.append(f"Error during S-to-C: {e}\n{traceback.format_exc()}"); self.display_label.setText("Conversion failed."); self.Ct_data = None; return
+        except Exception as e:
+            self.log_console.append(f"Error during S-to-C: {e}\n{traceback.format_exc()}")
+            self.status_label.setText("Conversion failed.")
+            self.Ct_data = None
+            return
+
         QApplication.processEvents()
-        if not self.selected_model_name: self.log_console.append("No model selected. Skipping voxel-wise fitting."); self.display_label.setText("Conversion done. No model selected for fitting."); return
-        if self.Ct_data is None: self.log_console.append("Ct_data not available. Skipping model fitting."); self.display_label.setText("Ct data not available. Fitting skipped."); return
+
+        if not self.selected_model_name:
+            self.log_console.append("No model selected. Skipping voxel-wise fitting.")
+            self.status_label.setText("Conversion done. No model selected for fitting.")
+            return
+        if self.Ct_data is None:
+            self.log_console.append("Ct_data not available. Skipping model fitting.")
+            self.status_label.setText("Ct data not available. Fitting skipped.")
         num_cores_to_use = self.num_processes_input.value()
         self.log_console.append(f"Starting parallel voxel-wise {self.selected_model_name} model fitting using up to {num_cores_to_use} cores...")
         self.display_label.setText(f"Fitting {self.selected_model_name} voxel-wise (up to {num_cores_to_use} cores)... This may take a while."); QApplication.processEvents()
